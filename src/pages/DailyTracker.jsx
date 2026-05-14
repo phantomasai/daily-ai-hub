@@ -265,7 +265,7 @@ export default function DailyTracker() {
       : 'Log a meal or workout to get tailored macro tips.')
 
   return (
-    <div className="pb-44">
+    <div className="pb-[calc(17rem+max(1rem,env(safe-area-inset-bottom)))]">
       {!hasApiKey ? (
         <p className="mb-4 rounded-2xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-[14px] text-amber-100/95">
           Please add your API key in{' '}
@@ -408,7 +408,7 @@ export default function DailyTracker() {
 
       <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
 
-      <div className="pointer-events-none fixed inset-x-0 bottom-[calc(4.5rem+env(safe-area-inset-bottom))] z-40 flex justify-center px-4">
+      <div className="pointer-events-none fixed inset-x-0 bottom-[calc(5.5rem+max(0.75rem,env(safe-area-inset-bottom)))] z-[45] flex justify-center px-4 pb-2">
         <div className="pointer-events-auto w-full max-w-[398px] space-y-2">
           {aiMessage ? (
             <p className="rounded-2xl border border-white/10 bg-[#0a0a0f]/90 px-3 py-2 text-center text-[13px] leading-snug text-zinc-300 backdrop-blur-sm">
