@@ -1,0 +1,16 @@
+{
+  "rewrites": [
+    {
+      "source": "/__ai/openai/(.*)",
+      "destination": "https://api.openai.com/$1"
+    },
+    {
+      "source": "/__ai/anthropic/(.*)",
+      "destination": "https://api.anthropic.com/$1"
+    },
+    {
+      "source": "/((?!assets/|__ai/|favicon).*)",
+      "destination": "/index.html"
+    }
+  ]
+}
