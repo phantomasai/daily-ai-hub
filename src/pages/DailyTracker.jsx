@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { analyzeDailyTrackerInput, cleanApiKeyForHttp, getAiSettings } from '../aiService.js'
+import { captureSpeechOnce, getVoiceStatusLabel, isSpeechRecognitionSupported } from '../trackerVoice.js'
 import {
   computeTotalsFromLogItems,
   getTodayDateKey,
@@ -37,11 +38,13 @@ function formatTime(iso) {
 
 export default function DailyTracker() {
   const fileRef = useRef(null)
+  const location = useLocation()
+  const navigate = useNavigate()
   const [dateKey, setDateKey] = useState(getTodayDateKey)
   const [items, setItems] = useState(() => loadDailyLog(getTodayDateKey()))
   const [draft, setDraft] = useState('')
   const [loading, setLoading] = useState(false)
-  const [listening, setListening] = useState(false)
+  const [voicePhase, setVoicePhase] = useState('idle')
   const [aiMessage, setAiMessage] = useState('')
   const [macroInsight, setMacroInsight] = useState('')
   const [pendingSuggestion, setPendingSuggestion] = useState(null)
@@ -183,31 +186,37 @@ export default function DailyTracker() {
     reader.readAsDataURL(file)
   }
 
-  function startVoice() {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition
-    if (!SR) {
-      setAiMessage('Voice dictation is not supported in this browser.')
+  async function startVoice() {
+    if (voicePhase !== 'idle' || loading) return
+    if (!isSpeechRecognitionSupported()) {
+      setAiMessage('Voice dictation is not supported in this browser. Try Chrome or Safari on mobile.')
       return
     }
-    if (listening || loading) return
-    const rec = new SR()
-    rec.lang = getAiSettings().language === 'pl' ? 'pl-PL' : 'en-US'
-    rec.interimResults = false
-    rec.maxAlternatives = 1
-    rec.onstart = () => setListening(true)
-    rec.onerror = () => setListening(false)
-    rec.onend = () => setListening(false)
-    rec.onresult = (ev) => {
-      const said = ev.results[0]?.[0]?.transcript?.trim()
-      if (said) setDraft((prev) => (prev ? `${prev} ${said}` : said))
+    if (!hasApiKey) {
+      setAiMessage('Please add your API key in Settings')
+      return
     }
+    setAiMessage('')
     try {
-      rec.start()
-    } catch {
-      setListening(false)
-      setAiMessage('Could not start microphone.')
+      const said = await captureSpeechOnce({ onPhase: setVoicePhase })
+      setDraft(said)
+      await runAnalysis(said, null)
+    } catch (err) {
+      setAiMessage(err instanceof Error ? err.message : 'Could not capture voice.')
+      setVoicePhase('idle')
     }
   }
+
+  const voiceBusy = voicePhase !== 'idle' || loading
+  const statusLabel = getVoiceStatusLabel(voicePhase, loading)
+
+  useEffect(() => {
+    const text = typeof location.state?.analyzeText === 'string' ? location.state.analyzeText.trim() : ''
+    if (!text) return
+    navigate('.', { replace: true, state: {} })
+    setDraft(text)
+    void runAnalysis(text, null)
+  }, [location.state?.analyzeText])
 
   function removeItem(id) {
     setItems((prev) => {
@@ -410,6 +419,11 @@ export default function DailyTracker() {
 
       <div className="pointer-events-none fixed inset-x-0 bottom-[calc(5.5rem+max(0.75rem,env(safe-area-inset-bottom)))] z-[45] flex justify-center px-4 pb-2">
         <div className="pointer-events-auto w-full max-w-[398px] space-y-2">
+          {statusLabel ? (
+            <p className="rounded-2xl border border-cyan-500/25 bg-cyan-500/10 px-3 py-2 text-center text-[13px] font-medium text-cyan-100/95 backdrop-blur-sm">
+              {statusLabel}
+            </p>
+          ) : null}
           {aiMessage ? (
             <p className="rounded-2xl border border-white/10 bg-[#0a0a0f]/90 px-3 py-2 text-center text-[13px] leading-snug text-zinc-300 backdrop-blur-sm">
               {aiMessage}
@@ -419,9 +433,9 @@ export default function DailyTracker() {
             <button
               type="button"
               onClick={startVoice}
-              disabled={loading || !hasApiKey}
+              disabled={voiceBusy || !hasApiKey}
               className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[#0a0a0f] ${
-                listening ? 'animate-pulse bg-cyan-300' : 'bg-gradient-to-br from-cyan-400 to-blue-600'
+                voicePhase === 'listening' ? 'animate-pulse bg-cyan-300' : 'bg-gradient-to-br from-cyan-400 to-blue-600'
               } disabled:opacity-40`}
               aria-label="Voice dictation"
             >
@@ -430,7 +444,7 @@ export default function DailyTracker() {
             <button
               type="button"
               onClick={handlePickPhoto}
-              disabled={loading || !hasApiKey}
+              disabled={voiceBusy || !hasApiKey}
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-zinc-400 hover:bg-white/5 hover:text-zinc-200 disabled:opacity-40"
               aria-label="Upload photo"
             >
@@ -441,13 +455,13 @@ export default function DailyTracker() {
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
               placeholder="Log a meal, workout…"
-              disabled={loading}
+              disabled={voiceBusy}
               className="min-w-0 flex-1 bg-transparent text-[14px] text-white outline-none placeholder:text-zinc-600 disabled:opacity-50"
             />
             <button
               type="button"
               onClick={handleSend}
-              disabled={loading || !draft.trim() || !hasApiKey}
+              disabled={voiceBusy || !draft.trim() || !hasApiKey}
               className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-cyan-400 to-blue-600 text-[#0a0a0f] disabled:opacity-40"
               aria-label="Send"
             >

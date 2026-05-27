@@ -1,5 +1,8 @@
-import { Link } from 'react-router-dom'
+import { useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import { cleanApiKeyForHttp, getAiSettings } from '../aiService.js'
 import { IconMic, IconSparkle } from '../components/Icons.jsx'
+import { captureSpeechOnce, getVoiceStatusLabel, isSpeechRecognitionSupported } from '../trackerVoice.js'
 
 /** Heartbeat / activity line — dark glyph on cyan/blue badge */
 function HomeIconPulse({ className = 'h-[22px] w-[22px]' }) {
@@ -104,6 +107,33 @@ function HomeCard({ to, title, subtitle, icon }) {
 }
 
 export default function Home() {
+  const navigate = useNavigate()
+  const [voicePhase, setVoicePhase] = useState('idle')
+  const [voiceError, setVoiceError] = useState('')
+  const hasApiKey = cleanApiKeyForHttp(getAiSettings().apiKey).length > 0
+  const voiceBusy = voicePhase !== 'idle'
+  const statusLabel = getVoiceStatusLabel(voicePhase, false)
+
+  async function handleHomeVoice() {
+    if (voiceBusy) return
+    setVoiceError('')
+    if (!isSpeechRecognitionSupported()) {
+      setVoiceError('Voice dictation is not supported in this browser. Try Chrome or Safari on mobile.')
+      return
+    }
+    if (!hasApiKey) {
+      setVoiceError('Please add your API key in Settings')
+      return
+    }
+    try {
+      const said = await captureSpeechOnce({ onPhase: setVoicePhase })
+      navigate('/tracker', { state: { analyzeText: said } })
+    } catch (err) {
+      setVoiceError(err instanceof Error ? err.message : 'Could not capture voice.')
+      setVoicePhase('idle')
+    }
+  }
+
   return (
     <div className="space-y-6">
       <header className="space-y-2">
@@ -119,13 +149,35 @@ export default function Home() {
       <section className="rounded-[24px] border border-white/10 bg-[#12121a] px-6 py-10 text-center shadow-[0_20px_50px_rgba(0,0,0,0.35)]">
         <button
           type="button"
-          className="mx-auto flex h-28 w-28 items-center justify-center rounded-full bg-gradient-to-br from-cyan-400 to-blue-600 text-[#0a0a0f] shadow-[0_12px_40px_rgba(56,189,248,0.35)] transition hover:scale-[1.02] active:scale-[0.98]"
-          aria-label="Voice input (coming soon)"
+          onClick={handleHomeVoice}
+          disabled={voiceBusy}
+          className={`mx-auto flex h-28 w-28 items-center justify-center rounded-full text-[#0a0a0f] shadow-[0_12px_40px_rgba(56,189,248,0.35)] transition hover:scale-[1.02] active:scale-[0.98] disabled:opacity-60 ${
+            voicePhase === 'listening'
+              ? 'animate-pulse bg-cyan-300'
+              : 'bg-gradient-to-br from-cyan-400 to-blue-600'
+          }`}
+          aria-label="Voice input for Daily Tracker"
         >
           <IconMic className="h-11 w-11" />
         </button>
-        <p className="mx-auto mt-5 max-w-[240px] text-[14px] text-zinc-500">
-          Tap to dictate — I&apos;ll route it for you
+        {statusLabel ? (
+          <p className="mx-auto mt-4 text-[14px] font-medium text-cyan-300">{statusLabel}</p>
+        ) : null}
+        {voiceError ? (
+          <p className="mx-auto mt-4 max-w-[280px] text-[13px] leading-snug text-amber-200/90">
+            {voiceError}
+            {voiceError.includes('API key') ? (
+              <>
+                {' '}
+                <Link to="/settings" className="font-semibold text-cyan-300 underline-offset-2 hover:underline">
+                  Settings
+                </Link>
+              </>
+            ) : null}
+          </p>
+        ) : null}
+        <p className="mx-auto mt-5 max-w-[260px] text-[14px] text-zinc-500">
+          Tap to dictate food or workouts — logged via Daily Tracker
         </p>
       </section>
 
