@@ -1,10 +1,15 @@
 import { useMemo, useState } from 'react'
 import { IconMic } from '../components/Icons.jsx'
+import { cleanApiKeyForHttp, getAiSettings } from '../aiService.js'
 
 const LANGUAGE_OPTIONS = [
   { value: 'en', label: 'English' },
   { value: 'pl', label: 'Polish' },
   { value: 'es', label: 'Spanish' },
+]
+const DRAFT_LANGUAGE_OPTIONS = [
+  { value: 'auto', label: 'Auto' },
+  ...LANGUAGE_OPTIONS,
 ]
 
 function compactLines(text) {
@@ -296,27 +301,152 @@ export function generateSummary(cleaned, language = 'en') {
   }
 }
 
+function summarySchemaHint() {
+  return `Return ONLY valid JSON with this exact shape:
+{"subjectTopic":"string","latestUpdate":["string"],"keyPoints":["string"],"changesProgression":["string"],"awaitingOpenItems":["string"],"suggestedReplyFocus":["string"]}
+Rules:
+- Use the full thread context, newest email at top, older emails as context.
+- Keep concise operational business brief.
+- latestUpdate max 2 bullets.
+- No greetings/signatures/disclaimers.
+- No duplicated facts across sections.
+- If unclear, use "Not clear from thread" translated to requested language.`
+}
+
+function mapLanguageToInstruction(language) {
+  if (language === 'pl') return 'Write everything in Polish.'
+  if (language === 'es') return 'Write everything in Spanish.'
+  return 'Write everything in English.'
+}
+
+function detectEmailLanguage(text) {
+  const sample = (text || '').toLowerCase()
+  const polishScore = (sample.match(/\b(że|czy|oraz|dzień|proszę|potwierdzić|termin|montaż|jutro|odpowiedz)\b/g) || []).length
+  const spanishScore = (sample.match(/\b(hola|gracias|por favor|confirmar|instalacion|manana|adjunto|respuesta|correo)\b/g) || []).length
+  const englishScore = (sample.match(/\b(hello|thanks|please|confirm|schedule|installation|tomorrow|reply|email)\b/g) || []).length
+  if (polishScore >= spanishScore && polishScore >= englishScore && polishScore > 0) return 'pl'
+  if (spanishScore >= polishScore && spanishScore >= englishScore && spanishScore > 0) return 'es'
+  return 'en'
+}
+
+function resolveDraftLanguage(draftLanguage, detectedEmailLanguage) {
+  return draftLanguage === 'auto' ? detectedEmailLanguage || 'en' : draftLanguage
+}
+
+function maybeStripInstructionPrefix(text) {
+  return text
+    .trim()
+    .replace(
+      /^(odpisz(,\s*)?(ze|że)?|napisz(,\s*)?(ze|że)?|odpowiedz(,\s*)?(ze|że)?|reply(,?\s*)?(that)?|say(,?\s*)?(that)?|tell (them|him|her)?(,?\s*)?(that)?|write(,?\s*)?(that)?)\s*/i,
+      '',
+    )
+    .trim()
+}
+
+async function callOpenAiJson({ systemPrompt, userPrompt }) {
+  const key = cleanApiKeyForHttp(getAiSettings().apiKey)
+  const headers = { 'Content-Type': 'application/json' }
+  if (key) headers['x-openai-api-key'] = key
+
+  const res = await fetch('/api/openai', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      temperature: 0.2,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+    }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const msg = data?.error || data?.message || 'AI request failed.'
+    throw new Error(msg)
+  }
+  const content = data?.choices?.[0]?.message?.content
+  if (!content) throw new Error('Empty AI response.')
+  return JSON.parse(content)
+}
+
+async function generateThreadBriefAI(threadText, language) {
+  const payload = await callOpenAiJson({
+    systemPrompt: [
+      'You are an executive email assistant generating practical operational briefs.',
+      mapLanguageToInstruction(language),
+      summarySchemaHint(),
+    ].join('\n'),
+    userPrompt: `Thread (newest email first):\n${threadText}`,
+  })
+  return {
+    subjectTopic: String(payload.subjectTopic || '').trim(),
+    latestUpdate: Array.isArray(payload.latestUpdate) ? payload.latestUpdate.map(String).map((x) => x.trim()).filter(Boolean).slice(0, 2) : [],
+    keyPoints: Array.isArray(payload.keyPoints) ? payload.keyPoints.map(String).map((x) => x.trim()).filter(Boolean).slice(0, 8) : [],
+    changesProgression: Array.isArray(payload.changesProgression)
+      ? payload.changesProgression.map(String).map((x) => x.trim()).filter(Boolean).slice(0, 6)
+      : [],
+    awaitingOpenItems: Array.isArray(payload.awaitingOpenItems)
+      ? payload.awaitingOpenItems.map(String).map((x) => x.trim()).filter(Boolean).slice(0, 4)
+      : [],
+    suggestedReplyFocus: Array.isArray(payload.suggestedReplyFocus)
+      ? payload.suggestedReplyFocus.map(String).map((x) => x.trim()).filter(Boolean).slice(0, 4)
+      : [],
+  }
+}
+
+async function generateDraftAI({ cleaned, summary, replyIntention, language }) {
+  const intent = maybeStripInstructionPrefix(replyIntention)
+  const payload = await callOpenAiJson({
+    systemPrompt: [
+      'You write professional email replies.',
+      mapLanguageToInstruction(language),
+      'Treat user intention as instruction, NOT literal text to copy.',
+      'Never include phrases like "Reply that", "Odpisz że", or internal instructions.',
+      'Use full thread context, respond mainly to the latest email.',
+      'Do not invent names, dates, promises, or attachments.',
+      'Return ONLY valid JSON: {"draft":"string"}',
+    ].join('\n'),
+    userPrompt: [
+      `Latest sender: ${cleaned.latestSender || 'Unknown'}`,
+      `Reply target: ${cleaned.replyTo || 'Thread participants'}`,
+      `Thread (cleaned):\n${cleaned.cleanedThread}`,
+      `Operational brief:\n${JSON.stringify(summary)}`,
+      `User reply intention (instruction): ${intent}`,
+    ].join('\n\n'),
+  })
+  const draft = String(payload.draft || '').trim()
+  if (!draft) throw new Error('Could not generate draft.')
+  return draft
+}
+
 export function generateDraft(cleaned, replyIntention, language = 'en') {
-  const intent = replyIntention.trim()
+  const intent = maybeStripInstructionPrefix(replyIntention)
   const topContext = (cleaned.latestSection || cleaned.cleanedThread || '').split('\n').slice(0, 8).join(' ')
-  const languageLine =
+  const greeting = language === 'pl' ? 'Dzień dobry,' : language === 'es' ? 'Hola,' : 'Hi,'
+  const thanks = language === 'pl' ? 'Dziękuję za wiadomość.' : language === 'es' ? 'Gracias por su mensaje.' : 'Thank you for the update.'
+  const contextLine =
     language === 'pl'
-      ? 'Write the email in Polish.'
+      ? `W nawiązaniu do najnowszej wiadomości: ${topContext.slice(0, 180)}${topContext.length > 180 ? '...' : ''}`
       : language === 'es'
-        ? 'Write the email in Spanish.'
-        : 'Write the email in English.'
+        ? `Respecto al mensaje más reciente: ${topContext.slice(0, 180)}${topContext.length > 180 ? '...' : ''}`
+        : `Regarding your latest message: ${topContext.slice(0, 180)}${topContext.length > 180 ? '...' : ''}`
+  const closing =
+    language === 'pl'
+      ? ['Proszę o potwierdzenie, czy to odpowiednie.', '', 'Pozdrawiam,', '[Twoje imię]']
+      : language === 'es'
+        ? ['Por favor confirme si esto le funciona.', '', 'Saludos,', '[Tu nombre]']
+        : ['Please confirm if this works for you.', '', 'Best regards,', '[Your Name]']
 
   return [
-    `Hi ${cleaned.latestSender || ''},`,
+    greeting,
     '',
-    `${languageLine} Thanks for the update.`,
-    `Regarding your latest message: ${topContext.slice(0, 180)}${topContext.length > 180 ? '...' : ''}`,
-    `${intent}`,
+    thanks,
+    contextLine,
+    intent ? `${intent.charAt(0).toUpperCase()}${intent.slice(1)}.` : '',
     '',
-    'Please let me know if anything else is needed.',
-    '',
-    'Best regards,',
-    '[Your Name]',
+    ...closing,
   ]
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
@@ -355,6 +485,8 @@ export function refineDraft(cleaned, currentDraft, refinementInstruction, langua
 export default function MailAssistant() {
   const [thread, setThread] = useState('')
   const [summaryLanguage, setSummaryLanguage] = useState('en')
+  const [draftLanguage, setDraftLanguage] = useState('auto')
+  const [detectedEmailLanguage, setDetectedEmailLanguage] = useState('en')
   const [replyIntention, setReplyIntention] = useState('')
   const [refineInput, setRefineInput] = useState('')
   const [cleaned, setCleaned] = useState(null)
@@ -378,10 +510,30 @@ export default function MailAssistant() {
     setStatusText('Cleaning thread...')
     await new Promise((r) => setTimeout(r, 200))
     const cleanedThread = cleanThread(thread)
+    const detected = detectEmailLanguage(cleanedThread.latestSection || cleanedThread.cleanedThread || '')
+    setDetectedEmailLanguage(detected)
     setCleaned(cleanedThread)
     setStatusText('Generating summary...')
     await new Promise((r) => setTimeout(r, 200))
-    setSummary(generateSummary(cleanedThread, summaryLanguage))
+    try {
+      const aiBrief = await generateThreadBriefAI(cleanedThread.cleanedThread, summaryLanguage)
+      setSummary({
+        ...aiBrief,
+        latestSender: cleanedThread.latestSender,
+        replyTo: cleanedThread.replyTo,
+        sectionCount: cleanedThread.sections.length,
+        labels: {
+          subjectTopic: tr(summaryLanguage, 'subjectTopic'),
+          latestUpdate: tr(summaryLanguage, 'latestUpdate'),
+          keyPoints: tr(summaryLanguage, 'keyPoints'),
+          changes: tr(summaryLanguage, 'changes'),
+          awaitingOpenItems: tr(summaryLanguage, 'awaitingOpenItems'),
+          suggestedReplyFocus: tr(summaryLanguage, 'suggestedReplyFocus'),
+        },
+      })
+    } catch {
+      setSummary(generateSummary(cleanedThread, summaryLanguage))
+    }
     setDraft('')
     setStatusText('')
   }
@@ -391,7 +543,48 @@ export default function MailAssistant() {
     if (!cleaned) return
     setStatusText('Generating summary...')
     await new Promise((r) => setTimeout(r, 180))
-    setSummary(generateSummary(cleaned, nextLanguage))
+    try {
+      const aiBrief = await generateThreadBriefAI(cleaned.cleanedThread, nextLanguage)
+      setSummary({
+        ...aiBrief,
+        latestSender: cleaned.latestSender,
+        replyTo: cleaned.replyTo,
+        sectionCount: cleaned.sections.length,
+        labels: {
+          subjectTopic: tr(nextLanguage, 'subjectTopic'),
+          latestUpdate: tr(nextLanguage, 'latestUpdate'),
+          keyPoints: tr(nextLanguage, 'keyPoints'),
+          changes: tr(nextLanguage, 'changes'),
+          awaitingOpenItems: tr(nextLanguage, 'awaitingOpenItems'),
+          suggestedReplyFocus: tr(nextLanguage, 'suggestedReplyFocus'),
+        },
+      })
+    } catch {
+      setSummary(generateSummary(cleaned, nextLanguage))
+    }
+    setStatusText('')
+  }
+
+  async function handleDraftLanguageChange(nextLanguage) {
+    setDraftLanguage(nextLanguage)
+    if (!cleaned || !replyIntention.trim()) return
+    const targetLanguage = resolveDraftLanguage(nextLanguage, detectedEmailLanguage)
+    setStatusText('Generating draft...')
+    await new Promise((r) => setTimeout(r, 180))
+    try {
+      const activeSummary = summary || generateSummary(cleaned, summaryLanguage)
+      const nextDraft = await generateDraftAI({
+        cleaned,
+        summary: activeSummary,
+        replyIntention,
+        language: targetLanguage,
+      })
+      setDraft(nextDraft)
+      setIsEditingDraft(false)
+    } catch {
+      setDraft(generateDraft(cleaned, replyIntention, targetLanguage))
+      setIsEditingDraft(false)
+    }
     setStatusText('')
   }
 
@@ -406,13 +599,27 @@ export default function MailAssistant() {
     }
     setErrorText('')
     const activeCleaned = cleaned || cleanThread(thread)
+    const detected = detectEmailLanguage(activeCleaned.latestSection || activeCleaned.cleanedThread || '')
+    if (!cleaned) setDetectedEmailLanguage(detected)
+    const targetDraftLanguage = resolveDraftLanguage(draftLanguage, detected)
     if (!cleaned) {
       setCleaned(activeCleaned)
       setSummary(generateSummary(activeCleaned, summaryLanguage))
     }
     setStatusText('Generating draft...')
     await new Promise((r) => setTimeout(r, 220))
-    setDraft(generateDraft(activeCleaned, replyIntention, summaryLanguage))
+    try {
+      const activeSummary = summary || generateSummary(activeCleaned, summaryLanguage)
+      const aiDraft = await generateDraftAI({
+        cleaned: activeCleaned,
+        summary: activeSummary,
+        replyIntention,
+        language: targetDraftLanguage,
+      })
+      setDraft(aiDraft)
+    } catch {
+      setDraft(generateDraft(activeCleaned, replyIntention, targetDraftLanguage))
+    }
     setIsEditingDraft(false)
     setStatusText('')
   }
@@ -430,7 +637,8 @@ export default function MailAssistant() {
     setErrorText('')
     setStatusText('Applying changes...')
     await new Promise((r) => setTimeout(r, 220))
-    setDraft(refineDraft(cleaned, draft, refineInput, summaryLanguage))
+    const targetDraftLanguage = resolveDraftLanguage(draftLanguage, detectedEmailLanguage)
+    setDraft(refineDraft(cleaned, draft, refineInput, targetDraftLanguage))
     setRefineInput('')
     setStatusText('')
   }
@@ -580,7 +788,23 @@ export default function MailAssistant() {
           </section>
 
           <section className="rounded-[24px] border border-white/10 bg-[#12121a] p-5">
-            <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">Draft Reply</p>
+            <div className="flex items-start justify-between gap-3">
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">Draft Reply</p>
+              <select
+                value={draftLanguage}
+                onChange={(e) => handleDraftLanguageChange(e.target.value)}
+                className="rounded-lg border border-white/15 bg-[#1a1a24] px-2.5 py-1.5 text-[12px] text-zinc-200 outline-none"
+              >
+                {DRAFT_LANGUAGE_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <p className="mt-2 text-[12px] text-zinc-500">
+              Draft language: {draftLanguage === 'auto' ? `Auto (${LANGUAGE_OPTIONS.find((x) => x.value === detectedEmailLanguage)?.label || 'English'})` : LANGUAGE_OPTIONS.find((x) => x.value === draftLanguage)?.label}
+            </p>
             {isEditingDraft ? (
               <textarea
                 value={draft}
