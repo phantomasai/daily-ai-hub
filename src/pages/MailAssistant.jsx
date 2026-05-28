@@ -88,32 +88,26 @@ function tr(language, key) {
   const dict = {
     en: {
       subjectTopic: 'Subject / Topic',
-      conversationSummary: 'Conversation Summary',
-      latestUpdate: 'Latest Update',
+      latestEmail: 'Latest Email',
       keyPoints: 'Key points',
-      changes: 'Changes',
-      actionItems: 'Action items',
-      replyTarget: 'Reply Target',
+      changes: 'Changes / Updates',
+      needsReply: 'What needs reply',
       none: 'None detected',
     },
     pl: {
       subjectTopic: 'Temat',
-      conversationSummary: 'Podsumowanie rozmowy',
-      latestUpdate: 'Najnowsza aktualizacja',
+      latestEmail: 'Najnowszy email',
       keyPoints: 'Kluczowe punkty',
       changes: 'Zmiany',
-      actionItems: 'Dzialania',
-      replyTarget: 'Cel odpowiedzi',
+      needsReply: 'Co wymaga odpowiedzi',
       none: 'Brak',
     },
     es: {
       subjectTopic: 'Tema',
-      conversationSummary: 'Resumen de la conversacion',
-      latestUpdate: 'Ultima actualizacion',
+      latestEmail: 'Correo mas reciente',
       keyPoints: 'Puntos clave',
       changes: 'Cambios',
-      actionItems: 'Acciones',
-      replyTarget: 'Destino de respuesta',
+      needsReply: 'Que necesita respuesta',
       none: 'No detectado',
     },
   }
@@ -160,67 +154,79 @@ function uniqueLines(lines, max = 6) {
   return out
 }
 
+function normalizeFact(text) {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function pickNeedsReply(lines, max = 3) {
+  const need = lines.filter((line) =>
+    /please|need|can you|could you|confirm|reply|send|share|provide|deadline|by\s+\w+/i.test(line),
+  )
+  return uniqueLines(need, max)
+}
+
 export function generateSummary(cleaned, language = 'en') {
+  const none = tr(language, 'none')
   const sections = cleaned.sections || []
   const latestSection = cleaned.latestSection || ''
   const historySections = cleaned.contextSections || []
 
   const subjectTopic = extractSubject(cleaned)
-  const latestLines = extractMeaningfulLines(latestSection, 4)
-  const historyLines = uniqueLines(historySections.flatMap((s) => extractMeaningfulLines(s, 2)), 6)
-  const allLines = uniqueLines([...latestLines, ...historyLines], 10)
+  const latestLines = extractMeaningfulLines(latestSection, 8)
+  const oldestToNewest = [...historySections].reverse()
+  const historicalLines = uniqueLines(oldestToNewest.flatMap((s) => extractMeaningfulLines(s, 2)), 10)
 
-  const conversationSummary =
-    allLines.join(' ').slice(0, 420) ||
-    (cleaned.cleanedThread || '').split('\n').filter((l) => l.trim()).slice(0, 4).join(' ').slice(0, 420)
-  const latestUpdate = latestLines.join(' ').slice(0, 260) || tr(language, 'none')
+  const latestEmail = uniqueLines(
+    latestLines.filter((line) => line.length > 14),
+    2,
+  )
+
+  const threadFactsPool = uniqueLines([...historicalLines, ...latestLines], 14)
+  const latestNorm = new Set(latestEmail.map(normalizeFact))
 
   const keyPoints = uniqueLines(
-    allLines.filter((line) =>
-      /deadline|deliver|shipment|order|budget|material|responsib|approve|decision|meeting|schedule|confirm|question|request|action|depends|blocker|timeline|owner/i.test(
+    threadFactsPool.filter((line) => {
+      const norm = normalizeFact(line)
+      if (latestNorm.has(norm)) return false
+      return /quote|order|project|approved|accepted|material|delivery|schedule|date|budget|meeting|owner|responsib|pending|question|request|deadline|shipment/i.test(
         line,
-      ),
-    ),
+      )
+    }),
     6,
   )
 
-  const changes = uniqueLines(
-    latestLines.filter((line) =>
-      /changed|updated|new|instead|moved|rescheduled|delay|revised|added|copied|cc|constraint|issue|risk/i.test(line),
-    ),
-    4,
-  )
+  const timeline = []
+  for (const section of oldestToNewest) {
+    const event = extractMeaningfulLines(section, 1)[0]
+    if (!event) continue
+    timeline.push(event)
+  }
+  const newestEvent = latestLines[0]
+  if (newestEvent) timeline.push(`Latest update: ${newestEvent}`)
+  const changes = uniqueLines(timeline, 5)
 
-  const actionItems = uniqueLines(
-    allLines.filter((line) => /please|need|by |asap|confirm|action|required|can you|could you|reply|send|share|provide/i.test(line)),
-    5,
-  )
-
-  const latestMainRequest =
-    latestLines.find((line) => /please|need|can you|could you|confirm|reply|send|share|provide/i.test(line)) ||
-    latestLines[0] ||
-    tr(language, 'none')
-
-  const replyTarget = `${cleaned.replyTo || 'Thread participants'} — ${latestMainRequest}`
+  const combinedForReply = uniqueLines([...latestLines, ...historicalLines], 12)
+  const needsReply = pickNeedsReply(combinedForReply, 3)
 
   return {
     subjectTopic,
-    conversationSummary,
-    latestUpdate,
-    keyPoints: keyPoints.length ? keyPoints : [tr(language, 'none')],
-    changes: changes.length ? changes : [tr(language, 'none')],
-    actionItems: actionItems.length ? actionItems : [tr(language, 'none')],
+    latestEmail: latestEmail.length ? latestEmail : [none],
+    keyPoints: keyPoints.length ? keyPoints : [none],
+    changes: changes.length ? changes : [none],
+    needsReply: needsReply.length ? needsReply : [none],
     latestSender: cleaned.latestSender,
     replyTo: cleaned.replyTo,
     sectionCount: sections.length,
     labels: {
       subjectTopic: tr(language, 'subjectTopic'),
-      conversationSummary: tr(language, 'conversationSummary'),
-      latestUpdate: tr(language, 'latestUpdate'),
+      latestEmail: tr(language, 'latestEmail'),
       keyPoints: tr(language, 'keyPoints'),
       changes: tr(language, 'changes'),
-      actionItems: tr(language, 'actionItems'),
-      replyTarget: tr(language, 'replyTarget'),
+      needsReply: tr(language, 'needsReply'),
     },
   }
 }
@@ -440,15 +446,11 @@ export default function MailAssistant() {
               </div>
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
-                  {summary?.labels.conversationSummary}
+                  {summary?.labels.latestEmail}
                 </p>
-                <p className="mt-1.5 text-[13px] leading-relaxed text-zinc-300">{summary?.conversationSummary}</p>
-              </div>
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
-                  {summary?.labels.latestUpdate}
-                </p>
-                <p className="mt-1.5 text-[13px] leading-relaxed text-zinc-300">{summary?.latestUpdate}</p>
+                <ul className="mt-1.5 space-y-1.5 text-[13px] text-zinc-300">
+                  {summary?.latestEmail.map((item, idx) => <li key={idx}>• {item}</li>)}
+                </ul>
               </div>
             </div>
 
@@ -470,14 +472,10 @@ export default function MailAssistant() {
             </div>
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <div>
-                <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">{summary?.labels.actionItems}</p>
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">{summary?.labels.needsReply}</p>
                 <ul className="mt-1.5 space-y-1.5 text-[13px] text-zinc-300">
-                  {summary?.actionItems.map((item, idx) => <li key={idx}>• {item}</li>)}
+                  {summary?.needsReply.map((item, idx) => <li key={idx}>• {item}</li>)}
                 </ul>
-              </div>
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">{summary?.labels.replyTarget}</p>
-                <p className="mt-1.5 text-[13px] leading-relaxed text-zinc-300">{summary?.replyTarget}</p>
               </div>
             </div>
           </section>
