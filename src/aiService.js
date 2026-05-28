@@ -4,6 +4,7 @@
  */
 
 import { computeTotalsFromLogItems, getTodayDateKey } from './dailyLogStorage.js'
+import { MIXED_LANGUAGE_AI_RULE } from './mixedLanguagePrompt.js'
 
 const PREFIX = 'dailyAiHub_'
 
@@ -115,6 +116,9 @@ function parseNutritionJson(text) {
 function nutritionSystemPrompt() {
   return [
     'You help estimate meal nutrition and give short advice.',
+    MIXED_LANGUAGE_AI_RULE,
+    'Interpret food descriptions by meaning (e.g. "whey protein z kawa" = whey protein with coffee; "paella z miesem i rice" = paella with meat and rice; "dwa eggs and protein shake" = two eggs and a protein shake).',
+    'Estimate calories and macros from meaning, not literal mixed-language surface form.',
     'Reply with ONLY valid JSON (no markdown) in this exact shape:',
     '{"calories":number,"protein":number,"carbs":number,"fats":number,"suggestion":string}',
     'Numbers are for the described food. suggestion is one short English sentence.',
@@ -365,6 +369,9 @@ export async function analyzeImage(base64, prompt) {
 
 const TRACKER_JSON_RULES = `You MUST respond with ONLY valid JSON (no markdown, no code fences) using exactly this shape:
 {"type":"meal"|"activity"|"suggestion"|"rejected","name":"string","calories":number,"protein":number,"carbs":number,"fats":number,"burned_calories":number,"message":"string","suggestion":"string"}
+
+${MIXED_LANGUAGE_AI_RULE}
+Interpret mixed PL/EN/ES food and activity input by meaning. Put a clear meal/activity name in "name" (e.g. "whey protein with coffee", "paella with meat and rice", "two eggs and protein shake"). Estimate macros from meaning.
 
 Rules:
 - type "meal": user logged food or a meal photo. Set calories, protein, carbs, fats for that food. burned_calories must be 0. message briefly confirms in English. suggestion optional short idea to reach daily macro targets (or empty string).
