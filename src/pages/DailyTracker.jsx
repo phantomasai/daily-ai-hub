@@ -227,10 +227,6 @@ export default function DailyTracker() {
       setAiMessage('Audio recording is not supported in this browser.')
       return
     }
-    if (!hasApiKey) {
-      setAiMessage('Please add your API key in Settings')
-      return
-    }
     try {
       await rec.start()
     } catch (err) {
@@ -469,7 +465,7 @@ export default function DailyTracker() {
             <button
               type="button"
               onClick={toggleVoice}
-              disabled={(voicePhase === 'transcribing' || loading) || !hasApiKey}
+              disabled={voicePhase === 'transcribing' || loading}
               className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[#0a0a0f] ${
                 voicePhase === 'recording' ? 'animate-pulse bg-cyan-300' : 'bg-gradient-to-br from-cyan-400 to-blue-600'
               } disabled:opacity-40`}

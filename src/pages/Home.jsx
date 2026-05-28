@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { cleanApiKeyForHttp, getAiSettings } from '../aiService.js'
 import { IconMic, IconSparkle } from '../components/Icons.jsx'
 import { createVoiceRecorder, getVoiceStatusLabel, isAudioRecordingSupported } from '../trackerAudio.js'
 
@@ -112,7 +111,6 @@ export default function Home() {
   const [voicePhase, setVoicePhase] = useState('idle')
   const [voiceError, setVoiceError] = useState('')
   const [transcriptPreview, setTranscriptPreview] = useState('')
-  const hasApiKey = cleanApiKeyForHttp(getAiSettings().apiKey).length > 0
   const statusLabel = getVoiceStatusLabel(voicePhase, false)
 
   function getVoiceRecorder() {
@@ -150,10 +148,6 @@ export default function Home() {
     setTranscriptPreview('')
     if (!isAudioRecordingSupported()) {
       setVoiceError('Audio recording is not supported in this browser.')
-      return
-    }
-    if (!hasApiKey) {
-      setVoiceError('Please add your API key in Settings')
       return
     }
     try {
