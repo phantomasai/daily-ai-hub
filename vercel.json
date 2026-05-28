@@ -9,7 +9,7 @@
       "destination": "https://api.anthropic.com/$1"
     },
     {
-      "source": "/((?!assets/|__ai/|favicon).*)",
+      "source": "/((?!assets/|__ai/|api/|favicon).*)",
       "destination": "/index.html"
     }
   ]

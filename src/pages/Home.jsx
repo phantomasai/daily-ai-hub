@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { cleanApiKeyForHttp, getAiSettings } from '../aiService.js'
 import { IconMic, IconSparkle } from '../components/Icons.jsx'
-import { captureSpeechOnce, getVoiceStatusLabel, isSpeechRecognitionSupported } from '../trackerVoice.js'
+import { createVoiceRecorder, getVoiceStatusLabel, isAudioRecordingSupported } from '../trackerAudio.js'
 
 /** Heartbeat / activity line — dark glyph on cyan/blue badge */
 function HomeIconPulse({ className = 'h-[22px] w-[22px]' }) {
@@ -108,17 +108,48 @@ function HomeCard({ to, title, subtitle, icon }) {
 
 export default function Home() {
   const navigate = useNavigate()
+  const voiceRecorderRef = useRef(null)
   const [voicePhase, setVoicePhase] = useState('idle')
   const [voiceError, setVoiceError] = useState('')
+  const [transcriptPreview, setTranscriptPreview] = useState('')
   const hasApiKey = cleanApiKeyForHttp(getAiSettings().apiKey).length > 0
-  const voiceBusy = voicePhase !== 'idle'
   const statusLabel = getVoiceStatusLabel(voicePhase, false)
 
-  async function handleHomeVoice() {
-    if (voiceBusy) return
+  function getVoiceRecorder() {
+    if (!voiceRecorderRef.current) {
+      voiceRecorderRef.current = createVoiceRecorder({ onPhase: setVoicePhase })
+    }
+    return voiceRecorderRef.current
+  }
+
+  useEffect(() => {
+    return () => voiceRecorderRef.current?.cancel()
+  }, [])
+
+  async function toggleHomeVoice() {
+    if (voicePhase === 'transcribing') return
+
+    const rec = getVoiceRecorder()
+
+    if (voicePhase === 'recording') {
+      setVoiceError('')
+      try {
+        const said = await rec.stopAndTranscribe()
+        setTranscriptPreview(said)
+        console.log('[voice] passed to tracker analysis')
+        navigate('/tracker', { state: { analyzeText: said } })
+      } catch (err) {
+        setVoiceError(err instanceof Error ? err.message : 'Could not capture voice.')
+      }
+      return
+    }
+
+    if (voicePhase !== 'idle') return
+
     setVoiceError('')
-    if (!isSpeechRecognitionSupported()) {
-      setVoiceError('Voice dictation is not supported in this browser. Try Chrome or Safari on mobile.')
+    setTranscriptPreview('')
+    if (!isAudioRecordingSupported()) {
+      setVoiceError('Audio recording is not supported in this browser.')
       return
     }
     if (!hasApiKey) {
@@ -126,11 +157,9 @@ export default function Home() {
       return
     }
     try {
-      const said = await captureSpeechOnce({ onPhase: setVoicePhase })
-      navigate('/tracker', { state: { analyzeText: said } })
+      await rec.start()
     } catch (err) {
-      setVoiceError(err instanceof Error ? err.message : 'Could not capture voice.')
-      setVoicePhase('idle')
+      setVoiceError(err instanceof Error ? err.message : 'Could not start recording.')
     }
   }
 
@@ -149,19 +178,24 @@ export default function Home() {
       <section className="rounded-[24px] border border-white/10 bg-[#12121a] px-6 py-10 text-center shadow-[0_20px_50px_rgba(0,0,0,0.35)]">
         <button
           type="button"
-          onClick={handleHomeVoice}
-          disabled={voiceBusy}
+          onClick={toggleHomeVoice}
+          disabled={voicePhase === 'transcribing'}
           className={`mx-auto flex h-28 w-28 items-center justify-center rounded-full text-[#0a0a0f] shadow-[0_12px_40px_rgba(56,189,248,0.35)] transition hover:scale-[1.02] active:scale-[0.98] disabled:opacity-60 ${
-            voicePhase === 'listening'
+            voicePhase === 'recording'
               ? 'animate-pulse bg-cyan-300'
               : 'bg-gradient-to-br from-cyan-400 to-blue-600'
           }`}
-          aria-label="Voice input for Daily Tracker"
+          aria-label={voicePhase === 'recording' ? 'Stop recording' : 'Start voice recording for Daily Tracker'}
         >
           <IconMic className="h-11 w-11" />
         </button>
         {statusLabel ? (
           <p className="mx-auto mt-4 text-[14px] font-medium text-cyan-300">{statusLabel}</p>
+        ) : null}
+        {transcriptPreview ? (
+          <p className="mx-auto mt-3 max-w-[280px] text-[13px] italic text-zinc-400">
+            &ldquo;{transcriptPreview}&rdquo;
+          </p>
         ) : null}
         {voiceError ? (
           <p className="mx-auto mt-4 max-w-[280px] text-[13px] leading-snug text-amber-200/90">

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { analyzeDailyTrackerInput, cleanApiKeyForHttp, getAiSettings } from '../aiService.js'
-import { captureSpeechOnce, getVoiceStatusLabel, isSpeechRecognitionSupported } from '../trackerVoice.js'
+import { createVoiceRecorder, getVoiceStatusLabel, isAudioRecordingSupported } from '../trackerAudio.js'
 import {
   computeTotalsFromLogItems,
   getTodayDateKey,
@@ -38,6 +38,7 @@ function formatTime(iso) {
 
 export default function DailyTracker() {
   const fileRef = useRef(null)
+  const voiceRecorderRef = useRef(null)
   const location = useLocation()
   const navigate = useNavigate()
   const [dateKey, setDateKey] = useState(getTodayDateKey)
@@ -45,6 +46,7 @@ export default function DailyTracker() {
   const [draft, setDraft] = useState('')
   const [loading, setLoading] = useState(false)
   const [voicePhase, setVoicePhase] = useState('idle')
+  const [transcriptPreview, setTranscriptPreview] = useState('')
   const [aiMessage, setAiMessage] = useState('')
   const [macroInsight, setMacroInsight] = useState('')
   const [pendingSuggestion, setPendingSuggestion] = useState(null)
@@ -186,24 +188,53 @@ export default function DailyTracker() {
     reader.readAsDataURL(file)
   }
 
-  async function startVoice() {
-    if (voicePhase !== 'idle' || loading) return
-    if (!isSpeechRecognitionSupported()) {
-      setAiMessage('Voice dictation is not supported in this browser. Try Chrome or Safari on mobile.')
+  function getVoiceRecorder() {
+    if (!voiceRecorderRef.current) {
+      voiceRecorderRef.current = createVoiceRecorder({ onPhase: setVoicePhase })
+    }
+    return voiceRecorderRef.current
+  }
+
+  useEffect(() => {
+    return () => voiceRecorderRef.current?.cancel()
+  }, [])
+
+  async function toggleVoice() {
+    if (voicePhase === 'transcribing' || loading) return
+
+    const rec = getVoiceRecorder()
+
+    if (voicePhase === 'recording') {
+      setAiMessage('')
+      try {
+        const said = await rec.stopAndTranscribe()
+        setTranscriptPreview(said)
+        setDraft(said)
+        window.setTimeout(() => setTranscriptPreview(''), 5000)
+        console.log('[voice] passed to tracker analysis')
+        await runAnalysis(said, null)
+      } catch (err) {
+        setAiMessage(err instanceof Error ? err.message : 'Could not capture voice.')
+      }
+      return
+    }
+
+    if (voicePhase !== 'idle') return
+
+    setAiMessage('')
+    setTranscriptPreview('')
+    if (!isAudioRecordingSupported()) {
+      setAiMessage('Audio recording is not supported in this browser.')
       return
     }
     if (!hasApiKey) {
       setAiMessage('Please add your API key in Settings')
       return
     }
-    setAiMessage('')
     try {
-      const said = await captureSpeechOnce({ onPhase: setVoicePhase })
-      setDraft(said)
-      await runAnalysis(said, null)
+      await rec.start()
     } catch (err) {
-      setAiMessage(err instanceof Error ? err.message : 'Could not capture voice.')
-      setVoicePhase('idle')
+      setAiMessage(err instanceof Error ? err.message : 'Could not start recording.')
     }
   }
 
@@ -424,6 +455,11 @@ export default function DailyTracker() {
               {statusLabel}
             </p>
           ) : null}
+          {transcriptPreview ? (
+            <p className="rounded-2xl border border-white/10 bg-[#0a0a0f]/90 px-3 py-2 text-center text-[13px] italic text-zinc-300 backdrop-blur-sm">
+              &ldquo;{transcriptPreview}&rdquo;
+            </p>
+          ) : null}
           {aiMessage ? (
             <p className="rounded-2xl border border-white/10 bg-[#0a0a0f]/90 px-3 py-2 text-center text-[13px] leading-snug text-zinc-300 backdrop-blur-sm">
               {aiMessage}
@@ -432,12 +468,12 @@ export default function DailyTracker() {
           <div className="flex items-center gap-2 rounded-full border border-white/10 bg-[#12121a]/95 px-2 py-2 shadow-[0_12px_40px_rgba(0,0,0,0.45)] backdrop-blur-md">
             <button
               type="button"
-              onClick={startVoice}
-              disabled={voiceBusy || !hasApiKey}
+              onClick={toggleVoice}
+              disabled={(voicePhase === 'transcribing' || loading) || !hasApiKey}
               className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-[#0a0a0f] ${
-                voicePhase === 'listening' ? 'animate-pulse bg-cyan-300' : 'bg-gradient-to-br from-cyan-400 to-blue-600'
+                voicePhase === 'recording' ? 'animate-pulse bg-cyan-300' : 'bg-gradient-to-br from-cyan-400 to-blue-600'
               } disabled:opacity-40`}
-              aria-label="Voice dictation"
+              aria-label={voicePhase === 'recording' ? 'Stop recording' : 'Start voice recording'}
             >
               <IconMic className="h-5 w-5" />
             </button>
