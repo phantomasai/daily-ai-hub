@@ -130,8 +130,6 @@ export default function Todo() {
   const [editingTaskId, setEditingTaskId] = useState('')
   const [editingTitle, setEditingTitle] = useState('')
   const [menuTaskId, setMenuTaskId] = useState('')
-  const [menuNote, setMenuNote] = useState('')
-  const [isEditingNote, setIsEditingNote] = useState(false)
 
   const dayTasks = tasksByDay[selectedDay] || []
   const completedCount = dayTasks.filter((t) => t.completed).length
@@ -176,7 +174,6 @@ export default function Todo() {
     updateDay(selectedDay, (prev) => prev.filter((task) => !task.completed))
     if (menuTaskId && (tasksByDay[selectedDay] || []).find((t) => t.id === menuTaskId)?.completed) {
       setMenuTaskId('')
-      setIsEditingNote(false)
     }
   }
 
@@ -204,19 +201,9 @@ export default function Todo() {
   function openTaskMenu(task) {
     const nextId = menuTaskId === task.id ? '' : task.id
     setMenuTaskId(nextId)
-    setIsEditingNote(false)
-    setMenuNote(task.note || '')
   }
 
   const activeTask = dayTasks.find((task) => task.id === menuTaskId) || null
-
-  function saveTaskNote() {
-    if (!activeTask) return
-    updateDay(selectedDay, (prev) =>
-      prev.map((task) => (task.id === activeTask.id ? { ...task, note: menuNote.trim(), updatedAt: nowIso() } : task)),
-    )
-    setIsEditingNote(false)
-  }
 
   function moveTask(targetDay) {
     if (!activeTask || targetDay === selectedDay) return
@@ -224,14 +211,12 @@ export default function Todo() {
     updateDay(selectedDay, (prev) => prev.filter((task) => task.id !== activeTask.id))
     updateDay(targetDay, (prev) => [moved, ...prev])
     setMenuTaskId('')
-    setIsEditingNote(false)
   }
 
   function deleteTask() {
     if (!activeTask) return
     updateDay(selectedDay, (prev) => prev.filter((task) => task.id !== activeTask.id))
     setMenuTaskId('')
-    setIsEditingNote(false)
   }
 
   function openTasksCount(day) {
@@ -280,7 +265,7 @@ export default function Todo() {
           <ul className="divide-y divide-white/10">
             {visibleTasks.map((task) => (
               <li key={task.id} className={`px-4 py-3 ${task.completed ? 'opacity-55' : ''}`}>
-                <div className="flex items-start gap-3">
+                <div className="flex items-center gap-3">
                   <button
                     type="button"
                     onClick={() => toggleTask(task.id)}
@@ -314,14 +299,14 @@ export default function Todo() {
                       <button
                         type="button"
                         onClick={() => startInlineEdit(task)}
-                        className={`w-full text-left text-[15px] leading-snug ${
+                        className={`block w-full truncate text-left text-[15px] leading-snug ${
                           task.completed ? 'text-zinc-400 line-through' : 'text-white'
                         }`}
+                        title={task.title}
                       >
                         {task.title}
                       </button>
                     )}
-                    {task.note ? <p className="mt-1 text-[12px] leading-snug text-zinc-500">{task.note}</p> : null}
                   </div>
 
                   <button
@@ -350,40 +335,12 @@ export default function Todo() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => {
-                          setMenuNote(task.note || '')
-                          setIsEditingNote((v) => !v)
-                        }}
-                        className="rounded-full border border-white/15 px-3 py-1.5 text-[12px] text-zinc-300"
-                      >
-                        {task.note ? 'Edit note' : 'Add note'}
-                      </button>
-                      <button
-                        type="button"
                         onClick={deleteTask}
                         className="rounded-full border border-rose-500/40 px-3 py-1.5 text-[12px] text-rose-200"
                       >
                         Delete task
                       </button>
                     </div>
-
-                    {isEditingNote ? (
-                      <div className="flex gap-2">
-                        <input
-                          value={menuNote}
-                          onChange={(e) => setMenuNote(e.target.value)}
-                          placeholder="Add a short note…"
-                          className="min-w-0 flex-1 rounded-lg bg-[#1a1a24] px-3 py-2 text-[13px] text-white outline-none placeholder:text-zinc-600"
-                        />
-                        <button
-                          type="button"
-                          onClick={saveTaskNote}
-                          className="rounded-lg bg-gradient-to-r from-cyan-400 to-blue-600 px-3 py-2 text-[12px] font-semibold text-[#0a0a0f]"
-                        >
-                          Save
-                        </button>
-                      </div>
-                    ) : null}
 
                     <div>
                       <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">Move to</p>
