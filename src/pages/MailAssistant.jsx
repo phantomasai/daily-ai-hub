@@ -88,27 +88,51 @@ function tr(language, key) {
   const dict = {
     en: {
       subjectTopic: 'Subject / Topic',
-      latestEmail: 'Latest Email',
+      latestUpdate: 'Latest Update',
       keyPoints: 'Key points',
       changes: 'Changes / Updates',
-      needsReply: 'What needs reply',
+      awaitingOpenItems: 'Awaiting / Open Items',
+      suggestedReplyFocus: 'Suggested Reply Focus',
       none: 'None detected',
+      notClear: 'Not clear from thread',
+      initialStage: 'Initial stage',
+      then: 'Then',
+      latest: 'Latest',
+      latestSender: 'Latest sender',
+      replyingTo: 'Replying to',
+      messagesDetected: 'messages detected',
     },
     pl: {
       subjectTopic: 'Temat',
-      latestEmail: 'Najnowszy email',
+      latestUpdate: 'Najnowsza aktualizacja',
       keyPoints: 'Kluczowe punkty',
       changes: 'Zmiany',
-      needsReply: 'Co wymaga odpowiedzi',
+      awaitingOpenItems: 'Otwarte kwestie',
+      suggestedReplyFocus: 'Sugerowany kierunek odpowiedzi',
       none: 'Brak',
+      notClear: 'Nie wynika jasno z watku',
+      initialStage: 'Etap poczatkowy',
+      then: 'Nastepnie',
+      latest: 'Najnowsze',
+      latestSender: 'Nadawca najnowszej wiadomosci',
+      replyingTo: 'Odpowiedz do',
+      messagesDetected: 'wykrytych wiadomosci',
     },
     es: {
       subjectTopic: 'Tema',
-      latestEmail: 'Correo mas reciente',
+      latestUpdate: 'Ultima actualizacion',
       keyPoints: 'Puntos clave',
       changes: 'Cambios',
-      needsReply: 'Que necesita respuesta',
+      awaitingOpenItems: 'Pendientes / Abiertos',
+      suggestedReplyFocus: 'Enfoque sugerido de respuesta',
       none: 'No detectado',
+      notClear: 'No queda claro en el hilo',
+      initialStage: 'Etapa inicial',
+      then: 'Luego',
+      latest: 'Ultimo',
+      latestSender: 'Remitente mas reciente',
+      replyingTo: 'Responder a',
+      messagesDetected: 'mensajes detectados',
     },
   }
   return dict[language]?.[key] || dict.en[key]
@@ -162,71 +186,112 @@ function normalizeFact(text) {
     .trim()
 }
 
-function pickNeedsReply(lines, max = 3) {
-  const need = lines.filter((line) =>
-    /please|need|can you|could you|confirm|reply|send|share|provide|deadline|by\s+\w+/i.test(line),
-  )
-  return uniqueLines(need, max)
+function shortLine(text, max = 160) {
+  const cleaned = text.replace(/\s+/g, ' ').trim()
+  return cleaned.length > max ? `${cleaned.slice(0, max - 1).trim()}…` : cleaned
 }
 
-export function generateSummary(cleaned, language = 'en') {
-  const none = tr(language, 'none')
-  const sections = cleaned.sections || []
-  const latestSection = cleaned.latestSection || ''
-  const historySections = cleaned.contextSections || []
+function localizeProgressLine(text, idx, total, language) {
+  const line = shortLine(text)
+  if (language === 'en') {
+    if (idx === 0) return `${tr(language, 'initialStage')}: ${line}`
+    if (idx === total - 1) return `${tr(language, 'latest')}: ${line}`
+    return `${tr(language, 'then')}: ${line}`
+  }
+  if (language === 'pl') {
+    if (idx === 0) return `${tr(language, 'initialStage')}: ${line}`
+    if (idx === total - 1) return `${tr(language, 'latest')}: ${line}`
+    return `${tr(language, 'then')}: ${line}`
+  }
+  if (idx === 0) return `${tr(language, 'initialStage')}: ${line}`
+  if (idx === total - 1) return `${tr(language, 'latest')}: ${line}`
+  return `${tr(language, 'then')}: ${line}`
+}
 
-  const subjectTopic = extractSubject(cleaned)
-  const latestLines = extractMeaningfulLines(latestSection, 8)
-  const oldestToNewest = [...historySections].reverse()
-  const historicalLines = uniqueLines(oldestToNewest.flatMap((s) => extractMeaningfulLines(s, 2)), 10)
+function localizeReplyFocus(line, language) {
+  const item = shortLine(line)
+  if (language === 'pl') return `Odpowiedz na: ${item}`
+  if (language === 'es') return `Responder a: ${item}`
+  return `Reply to: ${item}`
+}
 
-  const latestEmail = uniqueLines(
-    latestLines.filter((line) => line.length > 14),
-    2,
+function extractAwaitingLines(lines) {
+  return lines.filter((line) =>
+    /pending|await|not clear|unclear|question|\?|confirm|availability|schedule|date|deadline|when|who|owner|needs|need|request|advise|reply/i.test(
+      line,
+    ),
   )
+}
 
-  const threadFactsPool = uniqueLines([...historicalLines, ...latestLines], 14)
-  const latestNorm = new Set(latestEmail.map(normalizeFact))
+export function generateThreadBrief(threadText, language = 'en') {
+  const cleaned = cleanThread(threadText)
+  const subjectTopic = extractSubject(cleaned)
+  const none = tr(language, 'notClear')
 
-  const keyPoints = uniqueLines(
-    threadFactsPool.filter((line) => {
+  const latestLines = uniqueLines(extractMeaningfulLines(cleaned.latestSection || '', 8).map((x) => shortLine(x)), 8)
+  const historyOldestToNewest = [...(cleaned.contextSections || [])].reverse()
+  const historyLines = uniqueLines(historyOldestToNewest.flatMap((s) => extractMeaningfulLines(s, 2).map((x) => shortLine(x))), 12)
+
+  const latestUpdate = uniqueLines(latestLines, 2)
+  const latestNorm = new Set(latestUpdate.map(normalizeFact))
+
+  const keyPointsRaw = uniqueLines(
+    [...historyLines, ...latestLines].filter((line) => {
       const norm = normalizeFact(line)
       if (latestNorm.has(norm)) return false
-      return /quote|order|project|approved|accepted|material|delivery|schedule|date|budget|meeting|owner|responsib|pending|question|request|deadline|shipment/i.test(
+      return /quote|order|project|approved|accepted|material|delivery|schedule|date|budget|meeting|owner|responsib|pending|question|request|deadline|shipment|install|works|availability/i.test(
         line,
       )
     }),
-    6,
+    7,
   )
 
-  const timeline = []
-  for (const section of oldestToNewest) {
+  const timelineRaw = []
+  for (const section of historyOldestToNewest) {
     const event = extractMeaningfulLines(section, 1)[0]
-    if (!event) continue
-    timeline.push(event)
+    if (event) timelineRaw.push(shortLine(event))
   }
-  const newestEvent = latestLines[0]
-  if (newestEvent) timeline.push(`Latest update: ${newestEvent}`)
-  const changes = uniqueLines(timeline, 5)
+  const latestEvent = latestLines[0]
+  if (latestEvent) timelineRaw.push(shortLine(latestEvent))
+  const changesProgression = uniqueLines(timelineRaw, 5).map((line, idx, arr) => localizeProgressLine(line, idx, arr.length, language))
 
-  const combinedForReply = uniqueLines([...latestLines, ...historicalLines], 12)
-  const needsReply = pickNeedsReply(combinedForReply, 3)
+  const awaitingOpenItems = uniqueLines(extractAwaitingLines([...latestLines, ...historyLines]), 3)
+
+  const suggestedReplyFocus = uniqueLines(
+    [
+      ...extractAwaitingLines(latestLines),
+      ...latestUpdate.slice(0, 1),
+      ...(awaitingOpenItems.length ? awaitingOpenItems.slice(0, 1) : []),
+    ],
+    3,
+  ).map((line) => localizeReplyFocus(line, language))
 
   return {
     subjectTopic,
-    latestEmail: latestEmail.length ? latestEmail : [none],
-    keyPoints: keyPoints.length ? keyPoints : [none],
-    changes: changes.length ? changes : [none],
-    needsReply: needsReply.length ? needsReply : [none],
+    latestUpdate: latestUpdate.length ? latestUpdate : [none],
+    keyPoints: keyPointsRaw.length ? keyPointsRaw : [none],
+    changesProgression: changesProgression.length ? changesProgression : [none],
+    awaitingOpenItems: awaitingOpenItems.length ? awaitingOpenItems : [none],
+    suggestedReplyFocus: suggestedReplyFocus.length ? suggestedReplyFocus : [none],
     latestSender: cleaned.latestSender,
     replyTo: cleaned.replyTo,
-    sectionCount: sections.length,
+    sectionCount: cleaned.sections.length,
+  }
+}
+
+export function generateSummary(cleaned, language = 'en') {
+  const brief = generateThreadBrief(cleaned.cleanedThread || '', language)
+  return {
+    ...brief,
+    latestSender: cleaned.latestSender,
+    replyTo: cleaned.replyTo,
     labels: {
       subjectTopic: tr(language, 'subjectTopic'),
-      latestEmail: tr(language, 'latestEmail'),
+      latestUpdate: tr(language, 'latestUpdate'),
       keyPoints: tr(language, 'keyPoints'),
       changes: tr(language, 'changes'),
-      needsReply: tr(language, 'needsReply'),
+      awaitingOpenItems: tr(language, 'awaitingOpenItems'),
+      suggestedReplyFocus: tr(language, 'suggestedReplyFocus'),
     },
   }
 }
@@ -434,8 +499,8 @@ export default function MailAssistant() {
               </select>
             </div>
             <p className="mt-2 text-[12px] text-zinc-500">
-              Latest sender: {summary?.latestSender || 'Unknown'} · Replying to: {summary?.replyTo || 'Thread'} ·{' '}
-              {summary?.sectionCount || 0} messages detected
+              {tr(summaryLanguage, 'latestSender')}: {summary?.latestSender || 'Unknown'} · {tr(summaryLanguage, 'replyingTo')}:{' '}
+              {summary?.replyTo || 'Thread'} · {summary?.sectionCount || 0} {tr(summaryLanguage, 'messagesDetected')}
             </p>
             <div className="mt-3 space-y-3">
               <div>
@@ -446,10 +511,10 @@ export default function MailAssistant() {
               </div>
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
-                  {summary?.labels.latestEmail}
+                  {summary?.labels.latestUpdate}
                 </p>
                 <ul className="mt-1.5 space-y-1.5 text-[13px] text-zinc-300">
-                  {summary?.latestEmail.map((item, idx) => <li key={idx}>• {item}</li>)}
+                  {summary?.latestUpdate.map((item, idx) => <li key={idx}>• {item}</li>)}
                 </ul>
               </div>
             </div>
@@ -466,15 +531,21 @@ export default function MailAssistant() {
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">{summary?.labels.changes}</p>
                 <ul className="mt-1.5 space-y-1.5 text-[13px] text-zinc-300">
-                  {summary?.changes.map((item, idx) => <li key={idx}>• {item}</li>)}
+                  {summary?.changesProgression.map((item, idx) => <li key={idx}>• {item}</li>)}
                 </ul>
               </div>
             </div>
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <div>
-                <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">{summary?.labels.needsReply}</p>
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">{summary?.labels.awaitingOpenItems}</p>
                 <ul className="mt-1.5 space-y-1.5 text-[13px] text-zinc-300">
-                  {summary?.needsReply.map((item, idx) => <li key={idx}>• {item}</li>)}
+                  {summary?.awaitingOpenItems.map((item, idx) => <li key={idx}>• {item}</li>)}
+                </ul>
+              </div>
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">{summary?.labels.suggestedReplyFocus}</p>
+                <ul className="mt-1.5 space-y-1.5 text-[13px] text-zinc-300">
+                  {summary?.suggestedReplyFocus.map((item, idx) => <li key={idx}>• {item}</li>)}
                 </ul>
               </div>
             </div>
