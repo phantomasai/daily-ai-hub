@@ -87,46 +87,140 @@ export function cleanThread(threadText) {
 function tr(language, key) {
   const dict = {
     en: {
-      summaryTitle: 'Short summary',
+      subjectTopic: 'Subject / Topic',
+      conversationSummary: 'Conversation Summary',
+      latestUpdate: 'Latest Update',
       keyPoints: 'Key points',
+      changes: 'Changes',
       actionItems: 'Action items',
+      replyTarget: 'Reply Target',
       none: 'None detected',
     },
     pl: {
-      summaryTitle: 'Krotkie podsumowanie',
+      subjectTopic: 'Temat',
+      conversationSummary: 'Podsumowanie rozmowy',
+      latestUpdate: 'Najnowsza aktualizacja',
       keyPoints: 'Kluczowe punkty',
+      changes: 'Zmiany',
       actionItems: 'Dzialania',
+      replyTarget: 'Cel odpowiedzi',
       none: 'Brak',
     },
     es: {
-      summaryTitle: 'Resumen corto',
+      subjectTopic: 'Tema',
+      conversationSummary: 'Resumen de la conversacion',
+      latestUpdate: 'Ultima actualizacion',
       keyPoints: 'Puntos clave',
+      changes: 'Cambios',
       actionItems: 'Acciones',
+      replyTarget: 'Destino de respuesta',
       none: 'No detectado',
     },
   }
   return dict[language]?.[key] || dict.en[key]
 }
 
-export function generateSummary(cleaned, language = 'en') {
-  const latest = cleaned.latestSection || cleaned.cleanedThread || ''
-  const lines = latest.split('\n').map((l) => l.trim()).filter(Boolean)
-  const bodyLines = lines.filter((line) => !/^(from|to|subject|date)\s*:/i.test(line)).slice(0, 4)
-  const shortSummary = bodyLines.join(' ').slice(0, 260) || lines.slice(0, 2).join(' ').slice(0, 260)
+function isHeaderLine(line) {
+  return /^(from|to|cc|subject|date|sent)\s*:/i.test(line)
+}
 
-  const keyPoints = bodyLines.slice(0, 3)
-  const actionItems = bodyLines.filter((line) => /please|need|deadline|by |asap|confirm|action|required/i.test(line))
+function isGreetingOrSignoff(line) {
+  return /^(hi|hello|dear|thanks|thank you|best|regards|pozdrawiam|cześć|hola)\b/i.test(line.trim())
+}
+
+function extractSubject(cleaned) {
+  const lines = cleaned.cleanedThread.split('\n').map((l) => l.trim())
+  const subjectLine = lines.find((line) => /^subject\s*:/i.test(line))
+  if (subjectLine) return subjectLine.split(':').slice(1).join(':').trim()
+  const candidate = lines.find((line) => line && !isHeaderLine(line) && !isGreetingOrSignoff(line))
+  return (candidate || 'Ongoing email thread').slice(0, 120)
+}
+
+function extractMeaningfulLines(section, limit = 5) {
+  return section
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .filter((line) => !isHeaderLine(line))
+    .filter((line) => !isGreetingOrSignoff(line))
+    .filter((line) => line.length > 8)
+    .slice(0, limit)
+}
+
+function uniqueLines(lines, max = 6) {
+  const seen = new Set()
+  const out = []
+  for (const line of lines) {
+    const key = line.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(line)
+    if (out.length >= max) break
+  }
+  return out
+}
+
+export function generateSummary(cleaned, language = 'en') {
+  const sections = cleaned.sections || []
+  const latestSection = cleaned.latestSection || ''
+  const historySections = cleaned.contextSections || []
+
+  const subjectTopic = extractSubject(cleaned)
+  const latestLines = extractMeaningfulLines(latestSection, 4)
+  const historyLines = uniqueLines(historySections.flatMap((s) => extractMeaningfulLines(s, 2)), 6)
+  const allLines = uniqueLines([...latestLines, ...historyLines], 10)
+
+  const conversationSummary =
+    allLines.join(' ').slice(0, 420) ||
+    (cleaned.cleanedThread || '').split('\n').filter((l) => l.trim()).slice(0, 4).join(' ').slice(0, 420)
+  const latestUpdate = latestLines.join(' ').slice(0, 260) || tr(language, 'none')
+
+  const keyPoints = uniqueLines(
+    allLines.filter((line) =>
+      /deadline|deliver|shipment|order|budget|material|responsib|approve|decision|meeting|schedule|confirm|question|request|action|depends|blocker|timeline|owner/i.test(
+        line,
+      ),
+    ),
+    6,
+  )
+
+  const changes = uniqueLines(
+    latestLines.filter((line) =>
+      /changed|updated|new|instead|moved|rescheduled|delay|revised|added|copied|cc|constraint|issue|risk/i.test(line),
+    ),
+    4,
+  )
+
+  const actionItems = uniqueLines(
+    allLines.filter((line) => /please|need|by |asap|confirm|action|required|can you|could you|reply|send|share|provide/i.test(line)),
+    5,
+  )
+
+  const latestMainRequest =
+    latestLines.find((line) => /please|need|can you|could you|confirm|reply|send|share|provide/i.test(line)) ||
+    latestLines[0] ||
+    tr(language, 'none')
+
+  const replyTarget = `${cleaned.replyTo || 'Thread participants'} — ${latestMainRequest}`
 
   return {
-    shortSummary,
+    subjectTopic,
+    conversationSummary,
+    latestUpdate,
     keyPoints: keyPoints.length ? keyPoints : [tr(language, 'none')],
+    changes: changes.length ? changes : [tr(language, 'none')],
     actionItems: actionItems.length ? actionItems : [tr(language, 'none')],
     latestSender: cleaned.latestSender,
     replyTo: cleaned.replyTo,
+    sectionCount: sections.length,
     labels: {
-      summaryTitle: tr(language, 'summaryTitle'),
+      subjectTopic: tr(language, 'subjectTopic'),
+      conversationSummary: tr(language, 'conversationSummary'),
+      latestUpdate: tr(language, 'latestUpdate'),
       keyPoints: tr(language, 'keyPoints'),
+      changes: tr(language, 'changes'),
       actionItems: tr(language, 'actionItems'),
+      replyTarget: tr(language, 'replyTarget'),
     },
   }
 }
@@ -334,25 +428,56 @@ export default function MailAssistant() {
               </select>
             </div>
             <p className="mt-2 text-[12px] text-zinc-500">
-              Latest sender: {summary?.latestSender || 'Unknown'} · Replying to: {summary?.replyTo || 'Thread'}
+              Latest sender: {summary?.latestSender || 'Unknown'} · Replying to: {summary?.replyTo || 'Thread'} ·{' '}
+              {summary?.sectionCount || 0} messages detected
             </p>
-            <p className="mt-3 text-[14px] leading-relaxed text-zinc-200">{summary?.shortSummary}</p>
+            <div className="mt-3 space-y-3">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+                  {summary?.labels.subjectTopic}
+                </p>
+                <p className="mt-1.5 text-[14px] leading-relaxed text-zinc-200">{summary?.subjectTopic}</p>
+              </div>
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+                  {summary?.labels.conversationSummary}
+                </p>
+                <p className="mt-1.5 text-[13px] leading-relaxed text-zinc-300">{summary?.conversationSummary}</p>
+              </div>
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+                  {summary?.labels.latestUpdate}
+                </p>
+                <p className="mt-1.5 text-[13px] leading-relaxed text-zinc-300">{summary?.latestUpdate}</p>
+              </div>
+            </div>
+
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
                   {summary?.labels.keyPoints}
                 </p>
                 <ul className="mt-1.5 space-y-1.5 text-[13px] text-zinc-300">
-                  {summary?.keyPoints.map((point, idx) => <li key={idx}>• {point}</li>)}
+                  {summary?.keyPoints.map((item, idx) => <li key={idx}>• {item}</li>)}
                 </ul>
               </div>
               <div>
-                <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
-                  {summary?.labels.actionItems}
-                </p>
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">{summary?.labels.changes}</p>
+                <ul className="mt-1.5 space-y-1.5 text-[13px] text-zinc-300">
+                  {summary?.changes.map((item, idx) => <li key={idx}>• {item}</li>)}
+                </ul>
+              </div>
+            </div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">{summary?.labels.actionItems}</p>
                 <ul className="mt-1.5 space-y-1.5 text-[13px] text-zinc-300">
                   {summary?.actionItems.map((item, idx) => <li key={idx}>• {item}</li>)}
                 </ul>
+              </div>
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">{summary?.labels.replyTarget}</p>
+                <p className="mt-1.5 text-[13px] leading-relaxed text-zinc-300">{summary?.replyTarget}</p>
               </div>
             </div>
           </section>
