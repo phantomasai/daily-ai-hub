@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { IconMic } from '../components/Icons.jsx'
+import { IconCamera, IconMic } from '../components/Icons.jsx'
 import { cleanApiKeyForHttp, getAiSettings } from '../aiService.js'
 import { createVoiceRecorder, getVoiceStatusLabel, isAudioRecordingSupported } from '../trackerAudio.js'
 
@@ -48,19 +48,124 @@ function removeNoiseBlocks(text) {
   return kept.join('\n')
 }
 
-function splitThreadNewestFirst(threadText) {
+function splitThreadSections(threadText) {
   const normalized = threadText.replace(/\r\n/g, '\n').trim()
-  const parts = normalized
-    .split(/\n(?:-{5,}|\s*From: |\s*On .+wrote:|\s*-----Original Message-----)/gi)
+  return normalized
+    .split(/\n(?:-{5,}|\s*From: |\s*On .+wrote:|\s*W dniu .+napisał|\s*W dniu .+napisal|\s*-----Original Message-----)/gi)
     .map((p) => compactLines(removeNoiseBlocks(p)))
     .filter(Boolean)
-  return parts
+}
+
+function tryParseDateString(str) {
+  const s = String(str || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/\u202f/g, ' ')
+  if (!s) return null
+  const parsed = Date.parse(s)
+  return Number.isNaN(parsed) ? null : parsed
+}
+
+function tryParseDateFromOnLine(line) {
+  const onAt = line.match(/^On\s+(.+?)\s+at\s+(.+?),\s*.+\s+wrote:/i)
+  if (onAt) return tryParseDateString(`${onAt[1]} ${onAt[2]}`)
+  const onComma = line.match(/^On\s+(.+?),\s*.+\s+wrote:/i)
+  if (onComma) return tryParseDateString(onComma[1])
+  return null
+}
+
+function tryParseDateFromPolishOnLine(line) {
+  const m = line.match(/W dniu\s+(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\s+o\s+(\d{1,2}:\d{2})/i)
+  if (!m) return null
+  const parts = m[1].split(/[./-]/).map(Number)
+  if (parts.length !== 3) return null
+  let [d, mo, y] = parts
+  if (y < 100) y += 2000
+  const [hh, mm] = m[2].split(':').map(Number)
+  const dt = new Date(y, mo - 1, d, hh, mm)
+  return Number.isNaN(dt.getTime()) ? null : dt.getTime()
+}
+
+function extractDateFromSection(section) {
+  const lines = section.split('\n').slice(0, 25)
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+
+    const headerMatch = trimmed.match(
+      /^(?:date|sent|data|wysłano|wyslano|enviado|datum|data wysłania|data wyslania)\s*:\s*(.+)$/i,
+    )
+    if (headerMatch) {
+      const ts = tryParseDateString(headerMatch[1])
+      if (ts != null) return ts
+    }
+
+    if (/^On\s.+wrote:/i.test(trimmed)) {
+      const ts = tryParseDateFromOnLine(trimmed)
+      if (ts != null) return ts
+    }
+
+    if (/^W dniu\s+/i.test(trimmed)) {
+      const ts = tryParseDateFromPolishOnLine(trimmed)
+      if (ts != null) return ts
+    }
+
+    const inlineDate = trimmed.match(
+      /\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*,?\s+\d{1,2}\s+[A-Za-z]+\s+\d{4}\s+\d{1,2}:\d{2}/i,
+    )
+    if (inlineDate) {
+      const ts = tryParseDateString(inlineDate[0])
+      if (ts != null) return ts
+    }
+  }
+  return null
+}
+
+function orderThreadSections(sections) {
+  const meta = sections.map((text, originalIndex) => ({
+    text,
+    originalIndex,
+    timestamp: extractDateFromSection(text),
+  }))
+
+  const datedCount = meta.filter((m) => m.timestamp != null).length
+  const useDates = datedCount >= 2
+
+  if (useDates) {
+    const sorted = [...meta].sort((a, b) => {
+      if (a.timestamp != null && b.timestamp != null) return b.timestamp - a.timestamp
+      if (a.timestamp != null) return -1
+      if (b.timestamp != null) return 1
+      return a.originalIndex - b.originalIndex
+    })
+    const orderedNewestFirst = sorted.map((m) => m.text)
+    const orderedOldestToNewest = [...orderedNewestFirst].reverse()
+    return {
+      sections: orderedNewestFirst,
+      orderedOldestToNewest,
+      latestSection: orderedNewestFirst[0] || '',
+      oldestSection: orderedOldestToNewest[0] || '',
+      contextSections: orderedNewestFirst.slice(1),
+      orderMethod: 'dates',
+    }
+  }
+
+  const orderedNewestFirst = [...sections]
+  const orderedOldestToNewest = [...sections].reverse()
+  return {
+    sections: orderedNewestFirst,
+    orderedOldestToNewest,
+    latestSection: orderedNewestFirst[0] || '',
+    oldestSection: orderedOldestToNewest[0] || '',
+    contextSections: orderedNewestFirst.slice(1),
+    orderMethod: 'position',
+  }
 }
 
 function detectLatestSender(section) {
   const fromLine = section
     .split('\n')
-    .find((line) => /^(from|nadawca)\s*:/i.test(line.trim()))
+    .find((line) => /^(from|nadawca|de|von)\s*:/i.test(line.trim()))
   if (fromLine) return fromLine.split(':').slice(1).join(':').trim()
   const first = section.split('\n').find((line) => line.trim())
   return first?.slice(0, 60) || 'Latest sender'
@@ -69,25 +174,35 @@ function detectLatestSender(section) {
 function detectReplyTo(section) {
   const toLine = section
     .split('\n')
-    .find((line) => /^(to|do)\s*:/i.test(line.trim()))
+    .find((line) => /^(to|do|para|an)\s*:/i.test(line.trim()))
   if (toLine) return toLine.split(':').slice(1).join(':').trim()
   return 'Thread participants'
 }
 
 export function cleanThread(threadText) {
-  const sections = splitThreadNewestFirst(threadText)
-  const latestSection = sections[0] || ''
-  const contextSections = sections.slice(1)
-  const dedupedContext = [...new Set(contextSections.map((s) => s.slice(0, 280)))].filter(Boolean)
+  const rawSections = splitThreadSections(threadText)
+  const ordered = orderThreadSections(rawSections)
+  const dedupedContext = [...new Set(ordered.contextSections.map((s) => s.slice(0, 280)))].filter(Boolean)
   return {
-    sections,
-    latestSection,
-    contextSections,
-    cleanedThread: compactLines([latestSection, ...contextSections].filter(Boolean).join('\n\n---\n\n')),
-    latestSender: detectLatestSender(latestSection),
-    replyTo: detectReplyTo(latestSection),
+    sections: ordered.sections,
+    orderedOldestToNewest: ordered.orderedOldestToNewest,
+    latestSection: ordered.latestSection,
+    oldestSection: ordered.oldestSection,
+    contextSections: ordered.contextSections,
+    orderMethod: ordered.orderMethod,
+    cleanedThread: compactLines(ordered.sections.filter(Boolean).join('\n\n---\n\n')),
+    latestSender: detectLatestSender(ordered.latestSection),
+    replyTo: detectReplyTo(ordered.latestSection),
     contextCount: dedupedContext.length,
   }
+}
+
+function threadPromptForAI(cleaned) {
+  const orderNote =
+    cleaned.orderMethod === 'dates'
+      ? 'Thread order: determined from detected email dates/times (newest message identified by date). Listed newest first below.'
+      : 'Thread order: dates not reliably detected; using pasted order (assumed newest first). Listed below.'
+  return `${orderNote}\n\n${cleaned.cleanedThread}`
 }
 
 function tr(language, key) {
@@ -153,8 +268,14 @@ function isGreetingOrSignoff(line) {
 }
 
 function extractSubject(cleaned) {
+  for (const section of cleaned.sections || []) {
+    const subjectLine = section
+      .split('\n')
+      .find((line) => /^(subject|temat|asunto|betreff)\s*:/i.test(line.trim()))
+    if (subjectLine) return subjectLine.split(':').slice(1).join(':').trim()
+  }
   const lines = cleaned.cleanedThread.split('\n').map((l) => l.trim())
-  const subjectLine = lines.find((line) => /^subject\s*:/i.test(line))
+  const subjectLine = lines.find((line) => /^(subject|temat|asunto)\s*:/i.test(line))
   if (subjectLine) return subjectLine.split(':').slice(1).join(':').trim()
   const candidate = lines.find((line) => line && !isHeaderLine(line) && !isGreetingOrSignoff(line))
   return (candidate || 'Ongoing email thread').slice(0, 120)
@@ -229,13 +350,14 @@ function extractAwaitingLines(lines) {
   )
 }
 
-export function generateThreadBrief(threadText, language = 'en') {
-  const cleaned = cleanThread(threadText)
+export function generateThreadBrief(threadTextOrCleaned, language = 'en') {
+  const cleaned =
+    typeof threadTextOrCleaned === 'string' ? cleanThread(threadTextOrCleaned) : threadTextOrCleaned
   const subjectTopic = extractSubject(cleaned)
   const none = tr(language, 'notClear')
 
   const latestLines = uniqueLines(extractMeaningfulLines(cleaned.latestSection || '', 8).map((x) => shortLine(x)), 8)
-  const historyOldestToNewest = [...(cleaned.contextSections || [])].reverse()
+  const historyOldestToNewest = cleaned.orderedOldestToNewest || [...(cleaned.sections || [])].reverse()
   const historyLines = uniqueLines(historyOldestToNewest.flatMap((s) => extractMeaningfulLines(s, 2).map((x) => shortLine(x))), 12)
 
   const latestUpdate = uniqueLines(latestLines, 2)
@@ -257,8 +379,6 @@ export function generateThreadBrief(threadText, language = 'en') {
     const event = extractMeaningfulLines(section, 1)[0]
     if (event) timelineRaw.push(shortLine(event))
   }
-  const latestEvent = latestLines[0]
-  if (latestEvent) timelineRaw.push(shortLine(latestEvent))
   const changesProgression = uniqueLines(timelineRaw, 5).map((line, idx, arr) => localizeProgressLine(line, idx, arr.length, language))
 
   const awaitingOpenItems = uniqueLines(extractAwaitingLines([...latestLines, ...historyLines]), 3)
@@ -286,7 +406,7 @@ export function generateThreadBrief(threadText, language = 'en') {
 }
 
 export function generateSummary(cleaned, language = 'en') {
-  const brief = generateThreadBrief(cleaned.cleanedThread || '', language)
+  const brief = generateThreadBrief(cleaned, language)
   return {
     ...brief,
     latestSender: cleaned.latestSender,
@@ -306,7 +426,11 @@ function summarySchemaHint() {
   return `Return ONLY valid JSON with this exact shape:
 {"subjectTopic":"string","latestUpdate":["string"],"keyPoints":["string"],"changesProgression":["string"],"awaitingOpenItems":["string"],"suggestedReplyFocus":["string"]}
 Rules:
-- Use the full thread context, newest email at top, older emails as context.
+- Use the full thread context. The latest email is the one with the newest date/time when dates are provided in the thread note; otherwise assume pasted order (newest first).
+- latestUpdate must reflect only the actual latest email, not older messages.
+- Key points: whole thread business facts, no duplicates.
+- changesProgression: evolution from oldest to newest.
+- awaitingOpenItems and suggestedReplyFocus: based on the actual latest email.
 - Keep concise operational business brief.
 - latestUpdate max 2 bullets.
 - No greetings/signatures/disclaimers.
@@ -372,14 +496,143 @@ async function callOpenAiJson({ systemPrompt, userPrompt }) {
   return JSON.parse(content)
 }
 
-async function generateThreadBriefAI(threadText, language) {
+async function callOpenAiVisionJson({ systemPrompt, imageDataUrl, userText }) {
+  const key = cleanApiKeyForHttp(getAiSettings().apiKey)
+  const headers = { 'Content-Type': 'application/json' }
+  if (key) headers['x-openai-api-key'] = key
+
+  const res = await fetch('/api/openai', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      temperature: 0.2,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: systemPrompt },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: userText },
+            { type: 'image_url', image_url: { url: imageDataUrl } },
+          ],
+        },
+      ],
+    }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const msg = data?.error || data?.message || 'Vision analysis failed.'
+    throw new Error(msg)
+  }
+  const content = data?.choices?.[0]?.message?.content
+  if (!content) throw new Error('Empty vision response.')
+  return JSON.parse(content)
+}
+
+/**
+ * @param {Array<{ id: string, dataUrl: string, uploadIndex: number }>} screenshots
+ */
+async function extractConversationFromScreenshots(screenshots) {
+  const visionSystem = [
+    'Extract the conversation from this screenshot (email, WhatsApp, Teams, Messenger, SMS, etc.).',
+    'Return ONLY valid JSON: {"transcript":"string","detectedTimestamp":"ISO8601 or empty string"}',
+    'transcript: plain-text messages with sender names and timestamps when visible.',
+    'Ignore phone status bar, battery, signal, app chrome, and unrelated UI.',
+    'Do not invent messages not visible in the image.',
+  ].join('\n')
+
+  const results = await Promise.all(
+    screenshots.map(async (shot, idx) => {
+      const payload = await callOpenAiVisionJson({
+        systemPrompt: visionSystem,
+        imageDataUrl: shot.dataUrl,
+        userText: `Screenshot ${idx + 1} of ${screenshots.length}. Extract all visible conversation text.`,
+      })
+      const transcript = String(payload.transcript || '').trim()
+      const ts = String(payload.detectedTimestamp || '').trim()
+      const parsed = ts ? Date.parse(ts) : NaN
+      return {
+        uploadIndex: shot.uploadIndex ?? idx,
+        transcript,
+        timestamp: Number.isNaN(parsed) ? null : parsed,
+      }
+    }),
+  )
+
+  const datedCount = results.filter((r) => r.timestamp != null).length
+  const ordered =
+    datedCount >= 2
+      ? [...results].sort((a, b) => {
+          if (a.timestamp != null && b.timestamp != null) return a.timestamp - b.timestamp
+          if (a.timestamp != null) return -1
+          if (b.timestamp != null) return 1
+          return a.uploadIndex - b.uploadIndex
+        })
+      : [...results].sort((a, b) => a.uploadIndex - b.uploadIndex)
+
+  return ordered
+    .map((r, idx) => `--- Screenshot ${idx + 1} ---\n${r.transcript}`)
+    .filter((block) => block.replace(/^--- Screenshot \d+ ---\n?/, '').trim())
+    .join('\n\n')
+}
+
+/**
+ * Combine pasted text + screenshot transcripts, clean thread, return brief-ready cleaned object.
+ */
+export async function analyzeConversation({ text, screenshots, summaryLanguage }) {
+  let combined = (text || '').trim()
+  if (screenshots?.length) {
+    const visionText = await extractConversationFromScreenshots(screenshots)
+    if (visionText) {
+      combined = combined ? `${combined}\n\n${visionText}` : visionText
+    }
+  }
+  if (!combined.trim()) {
+    throw new Error('No conversation content to analyze.')
+  }
+  const cleanedThread = cleanThread(combined)
+  const detected = detectEmailLanguage(cleanedThread.latestSection || cleanedThread.cleanedThread || '')
+  let brief
+  try {
+    brief = await generateThreadBriefAI(cleanedThread, summaryLanguage)
+  } catch {
+    brief = generateThreadBrief(cleanedThread, summaryLanguage)
+  }
+  return { cleaned: cleanedThread, brief, detectedLanguage: detected }
+}
+
+function readImageFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error('Could not read image.'))
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : ''
+      if (!dataUrl) {
+        reject(new Error('Could not read image.'))
+        return
+      }
+      resolve({
+        id: crypto.randomUUID(),
+        dataUrl,
+        base64: dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl,
+        fileName: file.name || 'screenshot',
+        mimeType: file.type || 'image/jpeg',
+        previewUrl: dataUrl,
+      })
+    }
+    reader.readAsDataURL(file)
+  })
+}
+
+async function generateThreadBriefAI(cleaned, language) {
   const payload = await callOpenAiJson({
     systemPrompt: [
       'You are an executive email assistant generating practical operational briefs.',
       mapLanguageToInstruction(language),
       summarySchemaHint(),
     ].join('\n'),
-    userPrompt: `Thread (newest email first):\n${threadText}`,
+    userPrompt: threadPromptForAI(cleaned),
   })
   return {
     subjectTopic: String(payload.subjectTopic || '').trim(),
@@ -405,14 +658,14 @@ async function generateDraftAI({ cleaned, summary, replyIntention, language }) {
       mapLanguageToInstruction(language),
       'Treat user intention as instruction, NOT literal text to copy.',
       'Never include phrases like "Reply that", "Odpisz że", or internal instructions.',
-      'Use full thread context, respond mainly to the latest email.',
+      'Use full thread context. Respond mainly to the latest email (newest by date when dates are known).',
       'Do not invent names, dates, promises, or attachments.',
       'Return ONLY valid JSON: {"draft":"string"}',
     ].join('\n'),
     userPrompt: [
       `Latest sender: ${cleaned.latestSender || 'Unknown'}`,
       `Reply target: ${cleaned.replyTo || 'Thread participants'}`,
-      `Thread (cleaned):\n${cleaned.cleanedThread}`,
+      threadPromptForAI(cleaned),
       `Operational brief:\n${JSON.stringify(summary)}`,
       `User reply intention (instruction): ${intent}`,
     ].join('\n\n'),
@@ -473,7 +726,7 @@ async function refineDraftAI({ cleaned, currentDraft, refinementInstruction, lan
       'Return ONLY valid JSON: {"draft":"string"}',
     ].join('\n'),
     userPrompt: [
-      `Thread (cleaned, newest first):\n${cleaned.cleanedThread}`,
+      threadPromptForAI(cleaned),
       `Current draft:\n${currentDraft}`,
       `Revision instructions: ${instruction}`,
     ].join('\n\n'),
@@ -514,7 +767,13 @@ export function refineDraft(cleaned, currentDraft, refinementInstruction, langua
 
 export default function MailAssistant() {
   const intentionVoiceRef = useRef(null)
+  const refineVoiceRef = useRef(null)
+  const uploadInputRef = useRef(null)
+  const cameraInputRef = useRef(null)
+  const summarySectionRef = useRef(null)
   const [thread, setThread] = useState('')
+  const [screenshots, setScreenshots] = useState([])
+  const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [summaryLanguage, setSummaryLanguage] = useState('en')
   const [draftLanguage, setDraftLanguage] = useState('auto')
   const [detectedEmailLanguage, setDetectedEmailLanguage] = useState('en')
@@ -529,12 +788,17 @@ export default function MailAssistant() {
   const [isEditingDraft, setIsEditingDraft] = useState(false)
   const [intentionVoicePhase, setIntentionVoicePhase] = useState('idle')
   const [intentionVoiceError, setIntentionVoiceError] = useState('')
+  const [refineVoicePhase, setRefineVoicePhase] = useState('idle')
+  const [refineVoiceError, setRefineVoiceError] = useState('')
 
   const canShowWorkflow = Boolean(cleaned)
 
-  const hasThread = useMemo(() => thread.trim().length > 0, [thread])
+  const hasInput = useMemo(() => thread.trim().length > 0 || screenshots.length > 0, [thread, screenshots])
+  const hasThread = useMemo(() => Boolean(cleaned) || hasInput, [cleaned, hasInput])
   const intentionVoiceStatus = getVoiceStatusLabel(intentionVoicePhase, false)
   const intentionVoiceBusy = intentionVoicePhase !== 'idle'
+  const refineVoiceStatus = getVoiceStatusLabel(refineVoicePhase, false)
+  const refineVoiceBusy = refineVoicePhase !== 'idle'
 
   function getIntentionVoiceRecorder() {
     if (!intentionVoiceRef.current) {
@@ -543,8 +807,18 @@ export default function MailAssistant() {
     return intentionVoiceRef.current
   }
 
+  function getRefineVoiceRecorder() {
+    if (!refineVoiceRef.current) {
+      refineVoiceRef.current = createVoiceRecorder({ onPhase: setRefineVoicePhase })
+    }
+    return refineVoiceRef.current
+  }
+
   useEffect(() => {
-    return () => intentionVoiceRef.current?.cancel()
+    return () => {
+      intentionVoiceRef.current?.cancel()
+      refineVoiceRef.current?.cancel()
+    }
   }, [])
 
   function appendReplyIntention(text) {
@@ -591,27 +865,98 @@ export default function MailAssistant() {
     }
   }
 
-  async function handleClean() {
-    if (!hasThread) {
-      setErrorText('Paste an email thread first.')
+  function appendRefineInput(text) {
+    const next = text.trim()
+    if (!next) return
+    setRefineInput((prev) => {
+      const updated = prev.trim() ? `${prev.trim()}\n${next}` : next
+      console.log('[mail] Refine textarea updated')
+      return updated
+    })
+  }
+
+  async function toggleRefineVoice() {
+    if (refineVoicePhase === 'transcribing') return
+
+    const rec = getRefineVoiceRecorder()
+
+    if (refineVoicePhase === 'recording') {
+      console.log('[mail] Refine mic recording stopped')
+      setRefineVoiceError('')
+      try {
+        const said = await rec.stopAndTranscribe()
+        console.log('[mail] Refine transcription received:', said)
+        appendRefineInput(said)
+      } catch {
+        setRefineVoiceError('Transcription failed.')
+      }
       return
     }
-    setErrorText('')
-    setStatusText('Cleaning thread...')
-    await new Promise((r) => setTimeout(r, 200))
-    const cleanedThread = cleanThread(thread)
-    const detected = detectEmailLanguage(cleanedThread.latestSection || cleanedThread.cleanedThread || '')
-    setDetectedEmailLanguage(detected)
-    setCleaned(cleanedThread)
-    setStatusText('Generating summary...')
-    await new Promise((r) => setTimeout(r, 200))
+
+    if (refineVoicePhase !== 'idle') return
+
+    setRefineVoiceError('')
+    if (!isAudioRecordingSupported()) {
+      setRefineVoiceError('Audio recording is not supported in this browser.')
+      return
+    }
     try {
-      const aiBrief = await generateThreadBriefAI(cleanedThread.cleanedThread, summaryLanguage)
+      await rec.start()
+      console.log('[mail] Refine mic recording started')
+    } catch (err) {
+      setRefineVoiceError(err instanceof Error ? err.message : 'Could not start recording.')
+    }
+  }
+
+  async function addScreenshotFiles(fileList) {
+    const files = Array.from(fileList || []).filter((f) => f.type.startsWith('image/'))
+    if (!files.length) return
+    const items = await Promise.all(files.map((f) => readImageFile(f)))
+    setScreenshots((prev) => {
+      const withIndex = items.map((item, idx) => ({ ...item, uploadIndex: prev.length + idx }))
+      return [...prev, ...withIndex]
+    })
+  }
+
+  function removeScreenshot(id) {
+    setScreenshots((prev) => prev.filter((s) => s.id !== id))
+  }
+
+  async function handleClean() {
+    console.log('[mail] Clean Thread clicked')
+    console.log('[mail] number of screenshots uploaded:', screenshots.length)
+    console.log('[mail] text length:', thread.trim().length)
+
+    if (!hasInput) {
+      setErrorText('Paste text or upload screenshots first.')
+      return
+    }
+
+    setIsAnalyzing(true)
+    setErrorText('')
+    setStatusText('Analyzing conversation...')
+    console.log('[mail] analysis started')
+
+    try {
+      const shotsForVision = screenshots.map((s, idx) => ({
+        id: s.id,
+        dataUrl: s.dataUrl,
+        uploadIndex: s.uploadIndex ?? idx,
+      }))
+
+      const result = await analyzeConversation({
+        text: thread,
+        screenshots: shotsForVision,
+        summaryLanguage,
+      })
+
+      setDetectedEmailLanguage(result.detectedLanguage)
+      setCleaned(result.cleaned)
       setSummary({
-        ...aiBrief,
-        latestSender: cleanedThread.latestSender,
-        replyTo: cleanedThread.replyTo,
-        sectionCount: cleanedThread.sections.length,
+        ...result.brief,
+        latestSender: result.cleaned.latestSender,
+        replyTo: result.cleaned.replyTo,
+        sectionCount: result.cleaned.sections.length,
         labels: {
           subjectTopic: tr(summaryLanguage, 'subjectTopic'),
           latestUpdate: tr(summaryLanguage, 'latestUpdate'),
@@ -621,11 +966,19 @@ export default function MailAssistant() {
           suggestedReplyFocus: tr(summaryLanguage, 'suggestedReplyFocus'),
         },
       })
-    } catch {
-      setSummary(generateSummary(cleanedThread, summaryLanguage))
+      setDraft('')
+      console.log('[mail] summary updated')
+      console.log('[mail] analysis completed')
+      window.setTimeout(() => {
+        summarySectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }, 150)
+    } catch (err) {
+      console.log('[mail] analysis failed', err instanceof Error ? err.message : '')
+      setErrorText('Could not analyze conversation.')
+    } finally {
+      setIsAnalyzing(false)
+      setStatusText('')
     }
-    setDraft('')
-    setStatusText('')
   }
 
   async function handleLanguageChange(nextLanguage) {
@@ -634,7 +987,7 @@ export default function MailAssistant() {
     setStatusText('Generating summary...')
     await new Promise((r) => setTimeout(r, 180))
     try {
-      const aiBrief = await generateThreadBriefAI(cleaned.cleanedThread, nextLanguage)
+      const aiBrief = await generateThreadBriefAI(cleaned, nextLanguage)
       setSummary({
         ...aiBrief,
         latestSender: cleaned.latestSender,
@@ -679,8 +1032,8 @@ export default function MailAssistant() {
   }
 
   async function handleGenerateDraft() {
-    if (!hasThread) {
-      setErrorText('Paste an email thread first.')
+    if (!cleaned && !hasInput) {
+      setErrorText('Paste text or upload screenshots first.')
       return
     }
     if (!replyIntention.trim()) {
@@ -780,15 +1133,79 @@ export default function MailAssistant() {
           value={thread}
           onChange={(e) => setThread(e.target.value)}
           rows={10}
-          placeholder="Paste full email thread here…"
-          className="w-full resize-none rounded-2xl border border-white/10 bg-[#1a1a24] px-4 py-3 text-[14px] leading-relaxed text-white outline-none placeholder:text-zinc-600 focus:border-cyan-500/30"
+          placeholder="Paste email thread, chat, or conversation text…"
+          disabled={isAnalyzing}
+          className="w-full resize-none rounded-2xl border border-white/10 bg-[#1a1a24] px-4 py-3 text-[14px] leading-relaxed text-white outline-none placeholder:text-zinc-600 focus:border-cyan-500/30 disabled:opacity-50"
         />
+
+        {screenshots.length > 0 ? (
+          <div className="flex flex-wrap gap-2">
+            {screenshots.map((shot) => (
+              <div key={shot.id} className="relative h-20 w-20 overflow-hidden rounded-xl border border-white/15 bg-[#1a1a24]">
+                <img src={shot.previewUrl} alt="" className="h-full w-full object-cover" />
+                <button
+                  type="button"
+                  onClick={() => removeScreenshot(shot.id)}
+                  disabled={isAnalyzing}
+                  className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/70 text-[11px] text-white disabled:opacity-50"
+                  aria-label="Remove screenshot"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        <div className="flex flex-wrap gap-2">
+          <input
+            ref={uploadInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              void addScreenshotFiles(e.target.files)
+              e.target.value = ''
+            }}
+          />
+          <input
+            ref={cameraInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            onChange={(e) => {
+              void addScreenshotFiles(e.target.files)
+              e.target.value = ''
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => uploadInputRef.current?.click()}
+            disabled={isAnalyzing}
+            className="flex items-center gap-2 rounded-full border border-white/15 bg-[#1a1a24] px-4 py-2 text-[13px] font-medium text-zinc-200 transition hover:border-cyan-500/35 disabled:opacity-50"
+          >
+            Upload
+          </button>
+          <button
+            type="button"
+            onClick={() => cameraInputRef.current?.click()}
+            disabled={isAnalyzing}
+            className="flex items-center gap-2 rounded-full border border-white/15 bg-[#1a1a24] px-4 py-2 text-[13px] font-medium text-zinc-200 transition hover:border-cyan-500/35 disabled:opacity-50"
+          >
+            <IconCamera className="h-4 w-4" />
+            Camera
+          </button>
+        </div>
+
         <button
           type="button"
-          onClick={handleClean}
-          className="w-full rounded-full bg-gradient-to-r from-[#7b91ff] to-[#29d8ff] py-3.5 text-[15px] font-semibold text-[#0a0a0f] shadow-[0_12px_32px_rgba(41,216,255,0.25)] transition hover:brightness-105 active:brightness-95"
+          onClick={() => void handleClean()}
+          disabled={isAnalyzing}
+          className="w-full rounded-full bg-gradient-to-r from-[#7b91ff] to-[#29d8ff] py-3.5 text-[15px] font-semibold text-[#0a0a0f] shadow-[0_12px_32px_rgba(41,216,255,0.25)] transition hover:brightness-105 active:brightness-95 disabled:opacity-60"
         >
-          Clean Thread
+          {isAnalyzing ? 'Analyzing conversation...' : 'Clean Thread'}
         </button>
       </section>
 
@@ -801,7 +1218,7 @@ export default function MailAssistant() {
 
       {canShowWorkflow ? (
         <div className="space-y-4">
-          <section className="rounded-[24px] border border-white/10 bg-[#12121a] p-5">
+          <section ref={summarySectionRef} className="rounded-[24px] border border-white/10 bg-[#12121a] p-5">
             <div className="flex items-start justify-between gap-3">
               <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">Summary</p>
               <select
@@ -889,7 +1306,7 @@ export default function MailAssistant() {
               <button
                 type="button"
                 onClick={toggleIntentionVoice}
-                disabled={intentionVoicePhase === 'transcribing'}
+                disabled={intentionVoicePhase === 'transcribing' || refineVoiceBusy}
                 className={`mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[#0a0a0f] transition disabled:opacity-50 ${
                   intentionVoicePhase === 'recording'
                     ? 'animate-pulse bg-cyan-300'
@@ -951,7 +1368,7 @@ export default function MailAssistant() {
               <button
                 type="button"
                 onClick={handleGenerateDraft}
-                disabled={!replyIntention.trim() || !hasThread}
+                disabled={!replyIntention.trim() || !cleaned}
                 className="rounded-full border border-white/15 px-4 py-2 text-[13px] font-medium text-zinc-200 disabled:opacity-40"
               >
                 Regenerate
@@ -969,17 +1386,40 @@ export default function MailAssistant() {
 
           <section className="space-y-3 rounded-[24px] border border-white/10 bg-[#12121a] p-5">
             <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">Refine draft</p>
-            <textarea
-              value={refineInput}
-              onChange={(e) => setRefineInput(e.target.value)}
-              rows={3}
-              placeholder="Tell AI what to change…"
-              className="w-full resize-none rounded-2xl border border-white/10 bg-[#1a1a24] px-4 py-3 text-[14px] leading-relaxed text-white outline-none placeholder:text-zinc-600 focus:border-cyan-500/30"
-            />
+            {refineVoiceStatus ? (
+              <p className="text-[13px] font-medium text-cyan-300">{refineVoiceStatus}</p>
+            ) : null}
+            {refineVoiceError ? (
+              <p className="text-[13px] text-rose-200/90">{refineVoiceError}</p>
+            ) : null}
+            <div className="flex items-end gap-2">
+              <textarea
+                value={refineInput}
+                onChange={(e) => setRefineInput(e.target.value)}
+                rows={3}
+                placeholder="Tell AI what to change…"
+                disabled={refineVoiceBusy}
+                className="w-full resize-none rounded-2xl border border-white/10 bg-[#1a1a24] px-4 py-3 text-[14px] leading-relaxed text-white outline-none placeholder:text-zinc-600 focus:border-cyan-500/30 disabled:opacity-50"
+              />
+              <button
+                type="button"
+                onClick={toggleRefineVoice}
+                disabled={refineVoicePhase === 'transcribing' || intentionVoiceBusy}
+                className={`mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[#0a0a0f] transition disabled:opacity-50 ${
+                  refineVoicePhase === 'recording'
+                    ? 'animate-pulse bg-cyan-300'
+                    : 'bg-gradient-to-br from-cyan-400 to-blue-600'
+                }`}
+                aria-label={refineVoicePhase === 'recording' ? 'Stop recording' : 'Record refinement instructions'}
+              >
+                <IconMic className="h-5 w-5" />
+              </button>
+            </div>
             <button
               type="button"
               onClick={handleRefineDraft}
-              className="w-full rounded-full bg-gradient-to-r from-[#7b91ff] to-[#29d8ff] py-3 text-[15px] font-semibold text-[#0a0a0f]"
+              disabled={refineVoiceBusy}
+              className="w-full rounded-full bg-gradient-to-r from-[#7b91ff] to-[#29d8ff] py-3 text-[15px] font-semibold text-[#0a0a0f] disabled:opacity-50"
             >
               Apply Changes
             </button>
