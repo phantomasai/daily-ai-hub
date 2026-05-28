@@ -1,4 +1,4 @@
-import { getAiSettings } from './aiService.js'
+import { cleanApiKeyForHttp, getAiSettings } from './aiService.js'
 
 /** @typedef {'idle' | 'recording' | 'transcribing'} VoicePhase */
 
@@ -37,10 +37,6 @@ function blobFilename(mimeType) {
   return 'recording.webm'
 }
 
-function transcriptionLanguage() {
-  return getAiSettings().language === 'pl' ? 'pl' : 'auto'
-}
-
 /**
  * @param {Blob} blob
  * @returns {Promise<string>}
@@ -53,11 +49,14 @@ export async function transcribeAudioBlob(blob) {
   const form = new FormData()
   const mime = blob.type || 'audio/webm'
   form.append('file', blob, blobFilename(mime))
-  const lang = transcriptionLanguage()
-  if (lang !== 'auto') form.append('language', lang)
+  // Let OpenAI auto-detect language for bilingual speech (PL/EN).
+  form.append('language', 'auto')
 
+  console.log('[voice] audio blob size:', blob.size)
   console.log('[voice] audio sent to /api/transcribe')
-  const res = await fetch('/api/transcribe', { method: 'POST', body: form })
+  const apiKey = cleanApiKeyForHttp(getAiSettings().apiKey)
+  const headers = apiKey ? { 'x-openai-api-key': apiKey } : undefined
+  const res = await fetch('/api/transcribe', { method: 'POST', body: form, headers })
   let data = {}
   try {
     data = await res.json()

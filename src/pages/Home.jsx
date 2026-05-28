@@ -134,7 +134,7 @@ export default function Home() {
       try {
         const said = await rec.stopAndTranscribe()
         setTranscriptPreview(said)
-        console.log('[voice] passed to tracker analysis')
+        console.log('[voice] analysis started')
         navigate('/tracker', { state: { analyzeText: said } })
       } catch (err) {
         setVoiceError(err instanceof Error ? err.message : 'Could not capture voice.')

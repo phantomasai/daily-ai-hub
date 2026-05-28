@@ -211,7 +211,7 @@ export default function DailyTracker() {
         setTranscriptPreview(said)
         setDraft(said)
         window.setTimeout(() => setTranscriptPreview(''), 5000)
-        console.log('[voice] passed to tracker analysis')
+        console.log('[voice] analysis started')
         await runAnalysis(said, null)
       } catch (err) {
         setAiMessage(err instanceof Error ? err.message : 'Could not capture voice.')
@@ -242,6 +242,7 @@ export default function DailyTracker() {
     if (!text) return
     navigate('.', { replace: true, state: {} })
     setDraft(text)
+    console.log('[voice] analysis started')
     void runAnalysis(text, null)
   }, [location.state?.analyzeText])
 

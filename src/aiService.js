@@ -83,7 +83,7 @@ export function saveAiCredentials({ provider, apiKey }) {
  * Avoids browser CORS when calling OpenAI / Anthropic from the SPA.
  */
 function openAiBaseUrl() {
-  return '/__ai/openai'
+  return '/api/openai'
 }
 
 function anthropicBaseUrl() {
@@ -132,12 +132,14 @@ async function openAiChat({ apiKey, messages, responseFormatJson = false, maxCom
   }
   if (responseFormatJson) body.response_format = { type: 'json_object' }
 
-  const res = await fetch(`${openAiBaseUrl()}/v1/chat/completions`, {
+  const headers = {
+    'Content-Type': 'application/json',
+  }
+  if (key) headers['x-openai-api-key'] = key
+
+  const res = await fetch(`${openAiBaseUrl()}`, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${key}`,
-      'Content-Type': 'application/json',
-    },
+    headers,
     body: JSON.stringify(body),
   })
 
@@ -221,7 +223,7 @@ export async function testConnection(overrides = null) {
 export async function analyzeText(prompt) {
   const { provider, apiKey } = getAiSettings()
   const key = cleanApiKeyForHttp(apiKey)
-  if (!key) {
+  if (!key && provider === 'claude') {
     return {
       calories: 0,
       protein: 0,
@@ -276,7 +278,7 @@ export async function analyzeText(prompt) {
 export async function analyzeImage(base64, prompt) {
   const { provider, apiKey } = getAiSettings()
   const key = cleanApiKeyForHttp(apiKey)
-  if (!key) {
+  if (!key && provider === 'claude') {
     return {
       calories: 0,
       protein: 0,
@@ -314,12 +316,14 @@ export async function analyzeImage(base64, prompt) {
         ],
       })
     } else {
-      const res = await fetch(`${openAiBaseUrl()}/v1/chat/completions`, {
+      const headers = {
+        'Content-Type': 'application/json',
+      }
+      if (key) headers['x-openai-api-key'] = key
+
+      const res = await fetch(`${openAiBaseUrl()}`, {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${key}`,
-          'Content-Type': 'application/json',
-        },
+        headers,
         body: JSON.stringify({
           model: OPENAI_MODEL,
           temperature: 0.3,
@@ -446,7 +450,7 @@ export function parseDailyTrackerAiResponse(text) {
 export async function analyzeDailyTrackerInput({ text, imageBase64, currentItems }) {
   const { provider, apiKey } = getAiSettings()
   const key = cleanApiKeyForHttp(apiKey)
-  if (!key) {
+  if (!key && provider === 'claude') {
     return { ok: false, error: 'Please add your API key in Settings' }
   }
 
@@ -483,12 +487,14 @@ export async function analyzeDailyTrackerInput({ text, imageBase64, currentItems
           ],
         })
       } else {
-        const res = await fetch(`${openAiBaseUrl()}/v1/chat/completions`, {
+        const headers = {
+          'Content-Type': 'application/json',
+        }
+        if (key) headers['x-openai-api-key'] = key
+
+        const res = await fetch(`${openAiBaseUrl()}`, {
           method: 'POST',
-          headers: {
-            Authorization: `Bearer ${key}`,
-            'Content-Type': 'application/json',
-          },
+          headers,
           body: JSON.stringify({
             model: OPENAI_MODEL,
             temperature: 0.3,
