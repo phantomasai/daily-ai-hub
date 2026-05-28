@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { IconMic } from '../components/Icons.jsx'
 import { cleanApiKeyForHttp, getAiSettings } from '../aiService.js'
+import { createVoiceRecorder, getVoiceStatusLabel, isAudioRecordingSupported } from '../trackerAudio.js'
 
 const LANGUAGE_OPTIONS = [
   { value: 'en', label: 'English' },
@@ -452,29 +453,58 @@ export function generateDraft(cleaned, replyIntention, language = 'en') {
     .replace(/\n{3,}/g, '\n\n')
 }
 
+function wantsTranslation(instruction) {
+  return /translate to (polish|english|spanish)|przetłumacz|po polsku|en español|en espanol/i.test(instruction)
+}
+
+async function refineDraftAI({ cleaned, currentDraft, refinementInstruction, language }) {
+  const instruction = refinementInstruction.trim()
+  const translateRequested = wantsTranslation(instruction)
+  const payload = await callOpenAiJson({
+    systemPrompt: [
+      'You revise professional email drafts based on user instructions.',
+      translateRequested
+        ? 'Follow explicit translation requests in the revision instructions.'
+        : `${mapLanguageToInstruction(language)} Keep the entire revised draft in this language.`,
+      'Treat revision input as instructions, NOT literal text to paste into the email.',
+      'Never include phrases like "Reply that", "Odpisz że", or the raw instruction text.',
+      'Apply only the requested changes. Preserve thread context and existing facts.',
+      'Do not invent names, dates, promises, or attachments.',
+      'Return ONLY valid JSON: {"draft":"string"}',
+    ].join('\n'),
+    userPrompt: [
+      `Thread (cleaned, newest first):\n${cleaned.cleanedThread}`,
+      `Current draft:\n${currentDraft}`,
+      `Revision instructions: ${instruction}`,
+    ].join('\n\n'),
+  })
+  const revised = String(payload.draft || '').trim()
+  if (!revised) throw new Error('Could not refine draft.')
+  return revised
+}
+
 export function refineDraft(cleaned, currentDraft, refinementInstruction, language = 'en') {
   const instruction = refinementInstruction.trim()
   let draft = currentDraft.trim()
   if (/short|shorter|krocej|krócej|mas corto|mas breve/i.test(instruction)) {
     draft = draft
       .split('\n')
-      .filter((line) => !/Regarding your latest message/i.test(line))
+      .filter((line) => !/Regarding your latest message|W nawiązaniu|Respecto al/i.test(line))
       .join('\n')
   }
-  if (/formal|bardziej formal|formal/i.test(instruction)) {
+  if (/formal|bardziej formal/i.test(instruction)) {
     draft = draft.replace(/^Hi\b/m, 'Dear').replace(/Best regards,/m, 'Sincerely,')
   }
   if (/warm|warmer|cieplej|amable|calido/i.test(instruction)) {
     draft = draft.replace(/Please let me know if anything else is needed\./, 'Happy to help further if useful.')
   }
-  if (/polish|po polsku|polski/i.test(instruction) || language === 'pl') {
-    draft = draft.replace('Best regards,', 'Pozdrawiam,')
-  }
-  if (/spanish|espanol|español/i.test(instruction) || language === 'es') {
-    draft = draft.replace('Best regards,', 'Saludos,')
-  }
-  if (!draft.includes(instruction) && /add|dodaj|añade|include|uwzglednij/i.test(instruction)) {
-    draft = `${draft}\n\n${instruction}`
+  if (wantsTranslation(instruction)) {
+    if (/polish|po polsku|polski/i.test(instruction)) {
+      draft = draft.replace('Best regards,', 'Pozdrawiam,')
+    }
+    if (/spanish|espanol|español/i.test(instruction)) {
+      draft = draft.replace('Best regards,', 'Saludos,')
+    }
   }
   if (!draft) {
     draft = generateDraft(cleaned, refinementInstruction, language)
@@ -483,6 +513,7 @@ export function refineDraft(cleaned, currentDraft, refinementInstruction, langua
 }
 
 export default function MailAssistant() {
+  const intentionVoiceRef = useRef(null)
   const [thread, setThread] = useState('')
   const [summaryLanguage, setSummaryLanguage] = useState('en')
   const [draftLanguage, setDraftLanguage] = useState('auto')
@@ -496,10 +527,69 @@ export default function MailAssistant() {
   const [errorText, setErrorText] = useState('')
   const [copyState, setCopyState] = useState('')
   const [isEditingDraft, setIsEditingDraft] = useState(false)
+  const [intentionVoicePhase, setIntentionVoicePhase] = useState('idle')
+  const [intentionVoiceError, setIntentionVoiceError] = useState('')
 
   const canShowWorkflow = Boolean(cleaned)
 
   const hasThread = useMemo(() => thread.trim().length > 0, [thread])
+  const intentionVoiceStatus = getVoiceStatusLabel(intentionVoicePhase, false)
+  const intentionVoiceBusy = intentionVoicePhase !== 'idle'
+
+  function getIntentionVoiceRecorder() {
+    if (!intentionVoiceRef.current) {
+      intentionVoiceRef.current = createVoiceRecorder({ onPhase: setIntentionVoicePhase })
+    }
+    return intentionVoiceRef.current
+  }
+
+  useEffect(() => {
+    return () => intentionVoiceRef.current?.cancel()
+  }, [])
+
+  function appendReplyIntention(text) {
+    const next = text.trim()
+    if (!next) return
+    setReplyIntention((prev) => {
+      const updated = prev.trim() ? `${prev.trim()}\n${next}` : next
+      console.log('[mail] reply intention updated')
+      return updated
+    })
+  }
+
+  async function toggleIntentionVoice() {
+    if (intentionVoicePhase === 'transcribing') return
+
+    const rec = getIntentionVoiceRecorder()
+
+    if (intentionVoicePhase === 'recording') {
+      setIntentionVoiceError('')
+      try {
+        const said = await rec.stopAndTranscribe()
+        console.log('[mail] Mail mic transcription received:', said)
+        appendReplyIntention(said)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Transcription failed.'
+        setIntentionVoiceError(msg)
+        console.log('[mail] transcription failed')
+      }
+      return
+    }
+
+    if (intentionVoicePhase !== 'idle') return
+
+    setIntentionVoiceError('')
+    if (!isAudioRecordingSupported()) {
+      setIntentionVoiceError('Audio recording is not supported in this browser.')
+      return
+    }
+    try {
+      await rec.start()
+      console.log('[mail] Mail mic recording started')
+    } catch (err) {
+      setIntentionVoiceError(err instanceof Error ? err.message : 'Could not start recording.')
+    }
+  }
 
   async function handleClean() {
     if (!hasThread) {
@@ -625,6 +715,7 @@ export default function MailAssistant() {
   }
 
   async function handleRefineDraft() {
+    console.log('[mail] Apply Changes clicked')
     if (!refineInput.trim()) {
       setErrorText('Add revision instructions first.')
       return
@@ -636,11 +727,30 @@ export default function MailAssistant() {
     if (!cleaned) return
     setErrorText('')
     setStatusText('Applying changes...')
-    await new Promise((r) => setTimeout(r, 220))
     const targetDraftLanguage = resolveDraftLanguage(draftLanguage, detectedEmailLanguage)
-    setDraft(refineDraft(cleaned, draft, refineInput, targetDraftLanguage))
-    setRefineInput('')
-    setStatusText('')
+    try {
+      const revised = await refineDraftAI({
+        cleaned,
+        currentDraft: draft,
+        refinementInstruction: refineInput,
+        language: targetDraftLanguage,
+      })
+      console.log('[mail] revised draft received')
+      setDraft(revised)
+      setIsEditingDraft(false)
+      setRefineInput('')
+      setStatusText('Draft updated.')
+      console.log('[mail] draft state updated')
+      window.setTimeout(() => setStatusText(''), 2500)
+    } catch {
+      const fallback = refineDraft(cleaned, draft, refineInput, targetDraftLanguage)
+      setDraft(fallback)
+      setIsEditingDraft(false)
+      setRefineInput('')
+      setStatusText('Draft updated.')
+      console.log('[mail] draft state updated (fallback)')
+      window.setTimeout(() => setStatusText(''), 2500)
+    }
   }
 
   async function handleCopyDraft() {
@@ -761,19 +871,31 @@ export default function MailAssistant() {
 
           <section className="space-y-3 rounded-[24px] border border-white/10 bg-[#12121a] p-5">
             <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">Your reply intention</p>
+            {intentionVoiceStatus ? (
+              <p className="text-[13px] font-medium text-cyan-300">{intentionVoiceStatus}</p>
+            ) : null}
+            {intentionVoiceError ? (
+              <p className="text-[13px] text-rose-200/90">{intentionVoiceError}</p>
+            ) : null}
             <div className="flex items-end gap-2">
               <textarea
                 value={replyIntention}
                 onChange={(e) => setReplyIntention(e.target.value)}
                 rows={4}
                 placeholder="Type what you want to say…"
-                className="w-full resize-none rounded-2xl border border-white/10 bg-[#1a1a24] px-4 py-3 text-[14px] leading-relaxed text-white outline-none placeholder:text-zinc-600 focus:border-cyan-500/30"
+                disabled={intentionVoiceBusy}
+                className="w-full resize-none rounded-2xl border border-white/10 bg-[#1a1a24] px-4 py-3 text-[14px] leading-relaxed text-white outline-none placeholder:text-zinc-600 focus:border-cyan-500/30 disabled:opacity-50"
               />
               <button
                 type="button"
-                disabled
-                className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/10 bg-[#1a1a24] text-zinc-500"
-                aria-label="Voice intention (coming soon)"
+                onClick={toggleIntentionVoice}
+                disabled={intentionVoicePhase === 'transcribing'}
+                className={`mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[#0a0a0f] transition disabled:opacity-50 ${
+                  intentionVoicePhase === 'recording'
+                    ? 'animate-pulse bg-cyan-300'
+                    : 'bg-gradient-to-br from-cyan-400 to-blue-600'
+                }`}
+                aria-label={intentionVoicePhase === 'recording' ? 'Stop recording' : 'Record reply intention'}
               >
                 <IconMic className="h-5 w-5" />
               </button>
