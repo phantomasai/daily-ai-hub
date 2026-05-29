@@ -465,11 +465,18 @@ export async function analyzeDailyTrackerInput({ text, imageBase64, currentItems
   const system = buildDailyTrackerSystemPrompt(currentItems)
   const rawText = (text || '').trim()
   const userText =
-    rawText
-      ? `User input (may mix Polish, English, Spanish — interpret by meaning): ${rawText}`
-      : imageBase64
-        ? 'Analyze this image for my daily log (meal or workout). Reply using the JSON rules.'
-        : ''
+    imageBase64 && rawText
+      ? [
+          'User description (PRIORITY — follow this over the image if they differ):',
+          rawText,
+          'Also use the attached photo for portioning and visible items when it supports the description.',
+          'Interpret mixed Polish, English, and Spanish by meaning.',
+        ].join(' ')
+      : rawText
+        ? `User input (may mix Polish, English, Spanish — interpret by meaning): ${rawText}`
+        : imageBase64
+          ? 'Analyze this image for my daily log (meal or workout). Reply using the JSON rules.'
+          : ''
 
   if (!userText && !imageBase64) {
     return { ok: false, error: 'Nothing to send.' }

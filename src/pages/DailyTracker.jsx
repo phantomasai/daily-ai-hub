@@ -44,7 +44,10 @@ export default function DailyTracker() {
   const [dateKey, setDateKey] = useState(getTodayDateKey)
   const [items, setItems] = useState(() => loadDailyLog(getTodayDateKey()))
   const [draft, setDraft] = useState('')
+  /** @type {{ dataUrl: string, base64: string } | null} */
+  const [pendingPhoto, setPendingPhoto] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [analyzingMeal, setAnalyzingMeal] = useState(false)
   const [voicePhase, setVoicePhase] = useState('idle')
   const [transcriptPreview, setTranscriptPreview] = useState('')
   const [aiMessage, setAiMessage] = useState('')
@@ -83,6 +86,7 @@ export default function DailyTracker() {
       return
     }
     setLoading(true)
+    setAnalyzingMeal(Boolean(imageBase64))
     setAiMessage('')
     try {
       const snapshot = items
@@ -148,14 +152,27 @@ export default function DailyTracker() {
       if (d.suggestion) setMacroInsight(d.suggestion)
       setPendingSuggestion(null)
       setDraft('')
+      setPendingPhoto(null)
     } finally {
       setLoading(false)
+      setAnalyzingMeal(false)
     }
   }
 
+  async function handleAnalyzeMeal() {
+    if (!pendingPhoto || loading) return
+    const description = draft.trim()
+    await runAnalysis(description, pendingPhoto.base64)
+  }
+
   async function handleSend() {
+    if (loading) return
+    if (pendingPhoto) {
+      await handleAnalyzeMeal()
+      return
+    }
     const t = draft.trim()
-    if (!t || loading) return
+    if (!t) return
     await runAnalysis(t, null)
   }
 
@@ -163,27 +180,27 @@ export default function DailyTracker() {
     fileRef.current?.click()
   }
 
-  async function handleFileChange(e) {
+  function clearPendingPhoto() {
+    setPendingPhoto(null)
+  }
+
+  function handleFileChange(e) {
     const file = e.target.files?.[0]
     e.target.value = ''
     if (!file || loading) return
-    setLoading(true)
     setAiMessage('')
     const reader = new FileReader()
     reader.onerror = () => {
-      setLoading(false)
       setAiMessage('Could not read image.')
     }
-    reader.onload = async () => {
-      try {
-        const dataUrl = typeof reader.result === 'string' ? reader.result : ''
-        const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl
-        const hint = draft.trim() || 'Analyze this image for my daily log (meal or workout).'
-        setDraft('')
-        await runAnalysis(hint, base64)
-      } finally {
-        setLoading(false)
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : ''
+      if (!dataUrl) {
+        setAiMessage('Could not read image.')
+        return
       }
+      const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl
+      setPendingPhoto({ dataUrl, base64 })
     }
     reader.readAsDataURL(file)
   }
@@ -235,7 +252,11 @@ export default function DailyTracker() {
   }
 
   const voiceBusy = voicePhase !== 'idle' || loading
-  const statusLabel = getVoiceStatusLabel(voicePhase, loading)
+  const statusLabel = analyzingMeal
+    ? 'Analyzing meal...'
+    : getVoiceStatusLabel(voicePhase, loading)
+  const canAnalyzeMeal = Boolean(pendingPhoto) && !voiceBusy && hasApiKey
+  const canSendText = !pendingPhoto && draft.trim().length > 0 && !voiceBusy && hasApiKey
 
   useEffect(() => {
     const text = typeof location.state?.analyzeText === 'string' ? location.state.analyzeText.trim() : ''
@@ -462,6 +483,51 @@ export default function DailyTracker() {
               {aiMessage}
             </p>
           ) : null}
+          {pendingPhoto ? (
+            <div className="space-y-3 rounded-2xl border border-white/10 bg-[#12121a]/95 p-3 shadow-[0_12px_40px_rgba(0,0,0,0.45)] backdrop-blur-md">
+              <div className="relative overflow-hidden rounded-xl border border-white/10">
+                <img
+                  src={pendingPhoto.dataUrl}
+                  alt="Meal preview"
+                  className="max-h-44 w-full object-cover"
+                />
+              </div>
+              <textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                placeholder="Add details, e.g. chicken, rice, around 500g…"
+                disabled={voiceBusy}
+                rows={2}
+                className="w-full resize-none rounded-xl bg-[#1a1a24] px-3 py-2.5 text-[14px] text-white outline-none placeholder:text-zinc-600 disabled:opacity-50"
+              />
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleAnalyzeMeal()}
+                  disabled={!canAnalyzeMeal}
+                  className="min-w-0 flex-1 rounded-full bg-gradient-to-r from-cyan-400 to-blue-600 px-4 py-2.5 text-[14px] font-semibold text-[#0a0a0f] disabled:opacity-40"
+                >
+                  Analyze Meal
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePickPhoto}
+                  disabled={voiceBusy || !hasApiKey}
+                  className="rounded-full border border-white/15 px-4 py-2.5 text-[13px] font-medium text-zinc-300 disabled:opacity-40"
+                >
+                  Change photo
+                </button>
+                <button
+                  type="button"
+                  onClick={clearPendingPhoto}
+                  disabled={voiceBusy}
+                  className="rounded-full border border-white/15 px-4 py-2.5 text-[13px] font-medium text-zinc-400 disabled:opacity-40"
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          ) : null}
           <div className="flex items-center gap-2 rounded-full border border-white/10 bg-[#12121a]/95 px-2 py-2 shadow-[0_12px_40px_rgba(0,0,0,0.45)] backdrop-blur-md">
             <button
               type="button"
@@ -479,24 +545,28 @@ export default function DailyTracker() {
               onClick={handlePickPhoto}
               disabled={voiceBusy || !hasApiKey}
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-zinc-400 hover:bg-white/5 hover:text-zinc-200 disabled:opacity-40"
-              aria-label="Upload photo"
+              aria-label={pendingPhoto ? 'Change photo' : 'Upload photo'}
             >
               <IconCamera />
             </button>
-            <input
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
-              placeholder="Log a meal, workout…"
-              disabled={voiceBusy}
-              className="min-w-0 flex-1 bg-transparent text-[14px] text-white outline-none placeholder:text-zinc-600 disabled:opacity-50"
-            />
+            {!pendingPhoto ? (
+              <input
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
+                placeholder="Log a meal, workout…"
+                disabled={voiceBusy}
+                className="min-w-0 flex-1 bg-transparent text-[14px] text-white outline-none placeholder:text-zinc-600 disabled:opacity-50"
+              />
+            ) : (
+              <p className="min-w-0 flex-1 truncate px-1 text-[13px] text-zinc-500">Photo ready — add details above</p>
+            )}
             <button
               type="button"
               onClick={handleSend}
-              disabled={voiceBusy || !draft.trim() || !hasApiKey}
+              disabled={pendingPhoto ? !canAnalyzeMeal : !canSendText}
               className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-cyan-400 to-blue-600 text-[#0a0a0f] disabled:opacity-40"
-              aria-label="Send"
+              aria-label={pendingPhoto ? 'Analyze meal' : 'Send'}
             >
               <IconSend />
             </button>
