@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { normalizeTodoTaskTitle } from '../mixedLanguagePrompt.js'
-import { DAY_KEYS, getTodayDayKey, parseTodoDayFromText } from '../todoDays.js'
+import { DAY_KEYS, getTodayDayKey } from '../todoDays.js'
+import { extractTodoTask } from '../todoTaskExtract.js'
 
 const STORAGE_KEY = 'dailyAiHub_todoWeekly'
 const DAY_LABELS = {
@@ -161,14 +161,14 @@ export default function Todo() {
     navigate('.', { replace: true, state: {} })
 
     async function addFromVoice() {
-      const targetDay = parseTodoDayFromText(raw) || getTodayDayKey()
+      const extracted = await extractTodoTask(raw)
+      const targetDay = extracted.day || getTodayDayKey()
       setSelectedDay(targetDay)
-      const title = await normalizeTodoTaskTitle(raw)
       const at = nowIso()
       const task = {
         id: crypto.randomUUID(),
-        title,
-        note: '',
+        title: extracted.title || raw,
+        note: extracted.time || '',
         day: targetDay,
         completed: false,
         createdAt: at,
@@ -194,18 +194,20 @@ export default function Todo() {
   async function addTask() {
     const raw = input.trim()
     if (!raw) return
-    const title = await normalizeTodoTaskTitle(raw)
+    const extracted = await extractTodoTask(raw)
+    const targetDay = extracted.day || selectedDay
+    if (extracted.day) setSelectedDay(extracted.day)
     const at = nowIso()
     const task = {
       id: crypto.randomUUID(),
-      title,
-      note: '',
-      day: selectedDay,
+      title: extracted.title || raw,
+      note: extracted.time || '',
+      day: targetDay,
       completed: false,
       createdAt: at,
       updatedAt: at,
     }
-    updateDay(selectedDay, (prev) => [task, ...prev])
+    updateDay(targetDay, (prev) => [task, ...prev])
     setInput('')
   }
 
