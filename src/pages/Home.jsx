@@ -116,7 +116,7 @@ export default function Home() {
   const [transcriptPreview, setTranscriptPreview] = useState('')
   const [routeToast, setRouteToast] = useState('')
 
-  const voiceBusy = voicePhase !== 'idle' || flowPhase !== 'idle'
+  const micDisabled = voicePhase === 'transcribing' || flowPhase !== 'idle'
   const statusLabel = getHomeVoiceStatusLabel(voicePhase, flowPhase)
 
   function getVoiceRecorder() {
@@ -166,17 +166,22 @@ export default function Home() {
   }
 
   async function toggleHomeVoice() {
-    if (voiceBusy) return
+    console.log('[home] mic clicked', { voicePhase, flowPhase })
+
+    if (voicePhase === 'transcribing' || flowPhase !== 'idle') return
 
     const rec = getVoiceRecorder()
 
     if (voicePhase === 'recording') {
       setVoiceError('')
       setRouteToast('')
+      console.log('[home] stop requested')
+      console.log('[home] recording stopped')
       try {
+        console.log('[home] transcription started')
         const said = await rec.stopAndTranscribe()
+        console.log('[home] transcription received:', said)
         setTranscriptPreview(said)
-        console.log('[voice] home transcript:', said)
         await routeTranscript(said)
       } catch (err) {
         setFlowPhase('idle')
@@ -196,6 +201,7 @@ export default function Home() {
     }
     try {
       await rec.start()
+      console.log('[home] recording started')
     } catch (err) {
       setVoiceError(err instanceof Error ? err.message : 'Could not start recording.')
     }
@@ -217,7 +223,7 @@ export default function Home() {
         <button
           type="button"
           onClick={toggleHomeVoice}
-          disabled={voiceBusy}
+          disabled={micDisabled}
           className={`mx-auto flex h-28 w-28 items-center justify-center rounded-full text-[#0a0a0f] shadow-[0_12px_40px_rgba(56,189,248,0.35)] transition hover:scale-[1.02] active:scale-[0.98] disabled:opacity-60 ${
             voicePhase === 'recording'
               ? 'animate-pulse bg-cyan-300'
