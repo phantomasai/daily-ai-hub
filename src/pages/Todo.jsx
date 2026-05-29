@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { normalizeTodoTaskTitle } from '../mixedLanguagePrompt.js'
+import { DAY_KEYS, getTodayDayKey, parseTodoDayFromText } from '../todoDays.js'
 
 const STORAGE_KEY = 'dailyAiHub_todoWeekly'
-const DAY_KEYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
 const DAY_LABELS = {
   monday: 'Monday',
   tuesday: 'Tuesday',
@@ -123,13 +125,16 @@ function IconInfo({ className = 'h-4 w-4' }) {
 }
 
 export default function Todo() {
+  const location = useLocation()
+  const navigate = useNavigate()
   const [tasksByDay, setTasksByDay] = useState(readInitialTasksByDay)
-  const [selectedDay, setSelectedDay] = useState('monday')
+  const [selectedDay, setSelectedDay] = useState(getTodayDayKey)
   const [hideCompleted, setHideCompleted] = useState(false)
   const [input, setInput] = useState('')
   const [editingTaskId, setEditingTaskId] = useState('')
   const [editingTitle, setEditingTitle] = useState('')
   const [menuTaskId, setMenuTaskId] = useState('')
+  const [routeToast, setRouteToast] = useState('')
 
   const dayTasks = tasksByDay[selectedDay] || []
   const completedCount = dayTasks.filter((t) => t.completed).length
@@ -140,6 +145,45 @@ export default function Todo() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(tasksByDay))
   }, [tasksByDay])
 
+  useEffect(() => {
+    if (!routeToast) return
+    const t = setTimeout(() => setRouteToast(''), 3200)
+    return () => clearTimeout(t)
+  }, [routeToast])
+
+  useEffect(() => {
+    const raw = typeof location.state?.addTodoText === 'string' ? location.state.addTodoText.trim() : ''
+    if (!raw) return
+
+    const toast =
+      typeof location.state?.routeToast === 'string' ? location.state.routeToast.trim() : 'Added to To Do'
+
+    navigate('.', { replace: true, state: {} })
+
+    async function addFromVoice() {
+      const targetDay = parseTodoDayFromText(raw) || getTodayDayKey()
+      setSelectedDay(targetDay)
+      const title = await normalizeTodoTaskTitle(raw)
+      const at = nowIso()
+      const task = {
+        id: crypto.randomUUID(),
+        title,
+        note: '',
+        day: targetDay,
+        completed: false,
+        createdAt: at,
+        updatedAt: at,
+      }
+      setTasksByDay((prev) => ({
+        ...prev,
+        [targetDay]: [task, ...(prev[targetDay] || [])],
+      }))
+      if (toast) setRouteToast(toast)
+    }
+
+    void addFromVoice()
+  }, [location.state?.addTodoText])
+
   function updateDay(day, updater) {
     setTasksByDay((prev) => {
       const next = { ...prev, [day]: updater(prev[day] || []) }
@@ -147,9 +191,10 @@ export default function Todo() {
     })
   }
 
-  function addTask() {
-    const title = input.trim()
-    if (!title) return
+  async function addTask() {
+    const raw = input.trim()
+    if (!raw) return
+    const title = await normalizeTodoTaskTitle(raw)
     const at = nowIso()
     const task = {
       id: crypto.randomUUID(),
@@ -225,6 +270,14 @@ export default function Todo() {
 
   return (
     <div className="space-y-4 pb-[calc(13rem+max(1rem,env(safe-area-inset-bottom)))]">
+      {routeToast ? (
+        <p
+          className="rounded-xl border border-cyan-500/35 bg-cyan-500/15 px-4 py-2.5 text-center text-[14px] font-medium text-cyan-200"
+          role="status"
+        >
+          {routeToast}
+        </p>
+      ) : null}
       <header className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-white">To Do</h1>

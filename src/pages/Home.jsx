@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { IconMic, IconSparkle } from '../components/Icons.jsx'
-import { createVoiceRecorder, getVoiceStatusLabel, isAudioRecordingSupported } from '../trackerAudio.js'
+import { classifyHomeVoiceIntent, getHomeVoiceStatusLabel } from '../homeVoiceIntent.js'
+import { createVoiceRecorder, isAudioRecordingSupported } from '../trackerAudio.js'
 
 /** Heartbeat / activity line — dark glyph on cyan/blue badge */
 function HomeIconPulse({ className = 'h-[22px] w-[22px]' }) {
@@ -109,9 +110,14 @@ export default function Home() {
   const navigate = useNavigate()
   const voiceRecorderRef = useRef(null)
   const [voicePhase, setVoicePhase] = useState('idle')
+  /** @type {import('../homeVoiceIntent.js').HomeVoiceFlowPhase} */
+  const [flowPhase, setFlowPhase] = useState('idle')
   const [voiceError, setVoiceError] = useState('')
   const [transcriptPreview, setTranscriptPreview] = useState('')
-  const statusLabel = getVoiceStatusLabel(voicePhase, false)
+  const [routeToast, setRouteToast] = useState('')
+
+  const voiceBusy = voicePhase !== 'idle' || flowPhase !== 'idle'
+  const statusLabel = getHomeVoiceStatusLabel(voicePhase, flowPhase)
 
   function getVoiceRecorder() {
     if (!voiceRecorderRef.current) {
@@ -124,19 +130,56 @@ export default function Home() {
     return () => voiceRecorderRef.current?.cancel()
   }, [])
 
+  useEffect(() => {
+    if (!routeToast) return
+    const t = setTimeout(() => setRouteToast(''), 3200)
+    return () => clearTimeout(t)
+  }, [routeToast])
+
+  async function routeTranscript(said) {
+    setFlowPhase('understanding')
+    let intent
+    try {
+      intent = await classifyHomeVoiceIntent(said)
+    } catch {
+      intent = { destination: 'todo', text: said.trim(), reason: 'Classification failed; defaulting to To Do.' }
+    }
+
+    const text = intent.text || said.trim()
+    setTranscriptPreview(text)
+
+    if (intent.destination === 'tracker') {
+      setFlowPhase('routing_tracker')
+      setRouteToast('Added to Daily Tracker')
+      navigate('/tracker', { state: { analyzeText: text } })
+    } else {
+      setFlowPhase('routing_todo')
+      setRouteToast('Added to To Do')
+      navigate('/todo', {
+        state: {
+          addTodoText: text,
+          routeToast: 'Added to To Do',
+        },
+      })
+    }
+    setFlowPhase('idle')
+  }
+
   async function toggleHomeVoice() {
-    if (voicePhase === 'transcribing') return
+    if (voiceBusy) return
 
     const rec = getVoiceRecorder()
 
     if (voicePhase === 'recording') {
       setVoiceError('')
+      setRouteToast('')
       try {
         const said = await rec.stopAndTranscribe()
         setTranscriptPreview(said)
-        console.log('[voice] analysis started')
-        navigate('/tracker', { state: { analyzeText: said } })
+        console.log('[voice] home transcript:', said)
+        await routeTranscript(said)
       } catch (err) {
+        setFlowPhase('idle')
         setVoiceError(err instanceof Error ? err.message : 'Could not capture voice.')
       }
       return
@@ -146,6 +189,7 @@ export default function Home() {
 
     setVoiceError('')
     setTranscriptPreview('')
+    setRouteToast('')
     if (!isAudioRecordingSupported()) {
       setVoiceError('Audio recording is not supported in this browser.')
       return
@@ -173,13 +217,13 @@ export default function Home() {
         <button
           type="button"
           onClick={toggleHomeVoice}
-          disabled={voicePhase === 'transcribing'}
+          disabled={voiceBusy}
           className={`mx-auto flex h-28 w-28 items-center justify-center rounded-full text-[#0a0a0f] shadow-[0_12px_40px_rgba(56,189,248,0.35)] transition hover:scale-[1.02] active:scale-[0.98] disabled:opacity-60 ${
             voicePhase === 'recording'
               ? 'animate-pulse bg-cyan-300'
               : 'bg-gradient-to-br from-cyan-400 to-blue-600'
           }`}
-          aria-label={voicePhase === 'recording' ? 'Stop recording' : 'Start voice recording for Daily Tracker'}
+          aria-label={voicePhase === 'recording' ? 'Stop recording' : 'Start voice input'}
         >
           <IconMic className="h-11 w-11" />
         </button>
@@ -189,6 +233,14 @@ export default function Home() {
         {transcriptPreview ? (
           <p className="mx-auto mt-3 max-w-[280px] text-[13px] italic text-zinc-400">
             &ldquo;{transcriptPreview}&rdquo;
+          </p>
+        ) : null}
+        {routeToast ? (
+          <p
+            className="mx-auto mt-4 max-w-[280px] rounded-xl border border-cyan-500/35 bg-cyan-500/15 px-3 py-2 text-[13px] font-medium text-cyan-200"
+            role="status"
+          >
+            {routeToast}
           </p>
         ) : null}
         {voiceError ? (
@@ -204,8 +256,8 @@ export default function Home() {
             ) : null}
           </p>
         ) : null}
-        <p className="mx-auto mt-5 max-w-[260px] text-[14px] text-zinc-500">
-          Tap to dictate food or workouts — logged via Daily Tracker
+        <p className="mx-auto mt-5 max-w-[280px] text-[14px] text-zinc-500">
+          Tap to dictate food, workouts, or tasks — routed automatically
         </p>
       </section>
 

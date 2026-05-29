@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { IconCamera, IconMic } from '../components/Icons.jsx'
 import { cleanApiKeyForHttp, getAiSettings } from '../aiService.js'
+import { MIXED_LANGUAGE_AI_RULE } from '../aiPrompts.js'
 import { createVoiceRecorder, getVoiceStatusLabel, isAudioRecordingSupported } from '../trackerAudio.js'
 
 const LANGUAGE_OPTIONS = [
@@ -426,6 +427,7 @@ function summarySchemaHint() {
   return `Return ONLY valid JSON with this exact shape:
 {"subjectTopic":"string","latestUpdate":["string"],"keyPoints":["string"],"changesProgression":["string"],"awaitingOpenItems":["string"],"suggestedReplyFocus":["string"]}
 Rules:
+- ${MIXED_LANGUAGE_AI_RULE}
 - Use the full thread context. The latest email is the one with the newest date/time when dates are provided in the thread note; otherwise assume pasted order (newest first).
 - latestUpdate must reflect only the actual latest email, not older messages.
 - Key points: whole thread business facts, no duplicates.
@@ -629,6 +631,7 @@ async function generateThreadBriefAI(cleaned, language) {
   const payload = await callOpenAiJson({
     systemPrompt: [
       'You are an executive email assistant generating practical operational briefs.',
+      MIXED_LANGUAGE_AI_RULE,
       mapLanguageToInstruction(language),
       summarySchemaHint(),
     ].join('\n'),
@@ -655,9 +658,12 @@ async function generateDraftAI({ cleaned, summary, replyIntention, language }) {
   const payload = await callOpenAiJson({
     systemPrompt: [
       'You write professional email replies.',
+      MIXED_LANGUAGE_AI_RULE,
       mapLanguageToInstruction(language),
       'Treat user intention as instruction, NOT literal text to copy.',
       'Never include phrases like "Reply that", "Odpisz że", or internal instructions.',
+      'Interpret mixed PL/EN/ES instructions by meaning and write the reply only in the target draft language.',
+      'Example: instruction "Odpisz że możemy tomorrow at 10:30" with English draft -> "We can do it tomorrow at 10:30. Please confirm if this works for you."',
       'Use full thread context. Respond mainly to the latest email (newest by date when dates are known).',
       'Do not invent names, dates, promises, or attachments.',
       'Return ONLY valid JSON: {"draft":"string"}',
@@ -667,7 +673,7 @@ async function generateDraftAI({ cleaned, summary, replyIntention, language }) {
       `Reply target: ${cleaned.replyTo || 'Thread participants'}`,
       threadPromptForAI(cleaned),
       `Operational brief:\n${JSON.stringify(summary)}`,
-      `User reply intention (instruction): ${intent}`,
+      `User reply intention (instruction; may mix Polish, English, Spanish — interpret by meaning): ${intent}`,
     ].join('\n\n'),
   })
   const draft = String(payload.draft || '').trim()
@@ -716,11 +722,13 @@ async function refineDraftAI({ cleaned, currentDraft, refinementInstruction, lan
   const payload = await callOpenAiJson({
     systemPrompt: [
       'You revise professional email drafts based on user instructions.',
+      MIXED_LANGUAGE_AI_RULE,
       translateRequested
         ? 'Follow explicit translation requests in the revision instructions.'
         : `${mapLanguageToInstruction(language)} Keep the entire revised draft in this language.`,
       'Treat revision input as instructions, NOT literal text to paste into the email.',
       'Never include phrases like "Reply that", "Odpisz że", or the raw instruction text.',
+      'Interpret mixed PL/EN/ES revision instructions by meaning (e.g. "Dodaj, że wrócę z potwierdzeniem jutro" -> add in target language: I will come back with confirmation tomorrow).',
       'Apply only the requested changes. Preserve thread context and existing facts.',
       'Do not invent names, dates, promises, or attachments.',
       'Return ONLY valid JSON: {"draft":"string"}',
@@ -728,7 +736,7 @@ async function refineDraftAI({ cleaned, currentDraft, refinementInstruction, lan
     userPrompt: [
       threadPromptForAI(cleaned),
       `Current draft:\n${currentDraft}`,
-      `Revision instructions: ${instruction}`,
+      `Revision instructions (may mix Polish, English, Spanish — interpret by meaning): ${instruction}`,
     ].join('\n\n'),
   })
   const revised = String(payload.draft || '').trim()

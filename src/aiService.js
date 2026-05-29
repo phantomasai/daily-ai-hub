@@ -4,7 +4,7 @@
  */
 
 import { computeTotalsFromLogItems, getTodayDateKey } from './dailyLogStorage.js'
-import { MIXED_LANGUAGE_AI_RULE } from './mixedLanguagePrompt.js'
+import { MIXED_LANGUAGE_AI_RULE } from './aiPrompts.js'
 
 const PREFIX = 'dailyAiHub_'
 
@@ -400,6 +400,7 @@ export function buildDailyTrackerSystemPrompt(items) {
   return [
     'You are a personal nutrition and fitness assistant.',
     'Your ONLY job is to help with meals, nutrition, workouts and daily health goals.',
+    MIXED_LANGUAGE_AI_RULE,
     'Refuse any unrelated questions politely.',
     '',
     `Local calendar date for "today": ${today}.`,
@@ -462,9 +463,13 @@ export async function analyzeDailyTrackerInput({ text, imageBase64, currentItems
   }
 
   const system = buildDailyTrackerSystemPrompt(currentItems)
+  const rawText = (text || '').trim()
   const userText =
-    (text || '').trim() ||
-    (imageBase64 ? 'Analyze this image for my daily log (meal or workout). Reply using the JSON rules.' : '')
+    rawText
+      ? `User input (may mix Polish, English, Spanish — interpret by meaning): ${rawText}`
+      : imageBase64
+        ? 'Analyze this image for my daily log (meal or workout). Reply using the JSON rules.'
+        : ''
 
   if (!userText && !imageBase64) {
     return { ok: false, error: 'Nothing to send.' }
