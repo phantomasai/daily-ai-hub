@@ -1,4 +1,9 @@
 {
+  "functions": {
+    "api/transcribe.js": {
+      "maxDuration": 120
+    }
+  },
   "rewrites": [
     {
       "source": "/__ai/openai/(.*)",
