@@ -6,6 +6,7 @@ import Home from './pages/Home.jsx'
 import MailAssistant from './pages/MailAssistant.jsx'
 import Settings from './pages/Settings.jsx'
 import Todo from './pages/Todo.jsx'
+import Transcribe from './pages/Transcribe.jsx'
 
 export default function App() {
   return (
@@ -16,6 +17,7 @@ export default function App() {
           <Route path="tracker" element={<DailyTracker />} />
           <Route path="todo" element={<Todo />} />
           <Route path="mail" element={<MailAssistant />} />
+          <Route path="transcribe" element={<Transcribe />} />
           <Route path="history" element={<History />} />
           <Route path="settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/" replace />} />

@@ -83,6 +83,24 @@ function HomeIconJournal({ className = 'h-[22px] w-[22px]' }) {
   )
 }
 
+/** Waveform / transcript */
+function HomeIconTranscribe({ className = 'h-[22px] w-[22px]' }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M4 12h1.5M7.5 8v8M11 5v14M14.5 9v6M18 7v10M21.5 11v2" />
+    </svg>
+  )
+}
+
 function GradientIconBadge({ children }) {
   return (
     <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-cyan-400 via-cyan-300 to-blue-600 text-[#0a0a0f] shadow-[inset_0_1px_0_rgba(255,255,255,0.25)]">
@@ -285,6 +303,12 @@ export default function Home() {
           title="Mail Assistant"
           subtitle="Clean threads, draft replies"
           icon={<HomeIconMail />}
+        />
+        <HomeCard
+          to="/transcribe"
+          title="Transcribe"
+          subtitle="Voice memos & meetings"
+          icon={<HomeIconTranscribe />}
         />
         <HomeCard
           to="/history"

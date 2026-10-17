@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { DAY_KEYS, getTodayDayKey } from '../todoDays.js'
 import { extractTodoTask } from '../todoTaskExtract.js'
+import { createTodoTask, loadTasksByDay, nowIso, saveTasksByDay } from '../todoStorage.js'
 
-const STORAGE_KEY = 'dailyAiHub_todoWeekly'
 const DAY_LABELS = {
   monday: 'Monday',
   tuesday: 'Tuesday',
@@ -21,78 +21,6 @@ const DAY_SHORT = {
   friday: 'Fri',
   saturday: 'Sat',
   sunday: 'Sun',
-}
-
-const nowIso = () => new Date().toISOString()
-
-function makeEmptyWeek() {
-  return DAY_KEYS.reduce((acc, day) => {
-    acc[day] = []
-    return acc
-  }, {})
-}
-
-function seedMondayTasks() {
-  const createdAt = nowIso()
-  return [
-    {
-      id: crypto.randomUUID(),
-      title: 'Walk 20 minutes after lunch',
-      note: 'Easy pace is enough.',
-      day: 'monday',
-      completed: false,
-      createdAt,
-      updatedAt: createdAt,
-    },
-    {
-      id: crypto.randomUUID(),
-      title: 'Reply to contractor about deck quote',
-      note: 'Confirm timeline and materials.',
-      day: 'monday',
-      completed: true,
-      createdAt,
-      updatedAt: createdAt,
-    },
-    {
-      id: crypto.randomUUID(),
-      title: 'Buy oat milk and eggs',
-      note: '',
-      day: 'monday',
-      completed: false,
-      createdAt,
-      updatedAt: createdAt,
-    },
-  ]
-}
-
-function readInitialTasksByDay() {
-  const fallback = makeEmptyWeek()
-  fallback.monday = seedMondayTasks()
-
-  if (typeof window === 'undefined') return fallback
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return fallback
-    const parsed = JSON.parse(raw)
-    const week = makeEmptyWeek()
-    for (const day of DAY_KEYS) {
-      const arr = Array.isArray(parsed?.[day]) ? parsed[day] : []
-      week[day] = arr
-        .map((task) => ({
-          id: String(task?.id || crypto.randomUUID()),
-          title: String(task?.title || '').trim(),
-          note: String(task?.note || ''),
-          day,
-          completed: Boolean(task?.completed),
-          createdAt: String(task?.createdAt || nowIso()),
-          updatedAt: String(task?.updatedAt || nowIso()),
-        }))
-        .filter((task) => task.title)
-    }
-    return week
-  } catch {
-    return fallback
-  }
 }
 
 function IconEye({ className = 'h-5 w-5' }) {
@@ -127,7 +55,7 @@ function IconInfo({ className = 'h-4 w-4' }) {
 export default function Todo() {
   const location = useLocation()
   const navigate = useNavigate()
-  const [tasksByDay, setTasksByDay] = useState(readInitialTasksByDay)
+  const [tasksByDay, setTasksByDay] = useState(loadTasksByDay)
   const [selectedDay, setSelectedDay] = useState(getTodayDayKey)
   const [hideCompleted, setHideCompleted] = useState(false)
   const [input, setInput] = useState('')
@@ -141,8 +69,7 @@ export default function Todo() {
   const visibleTasks = hideCompleted ? dayTasks.filter((t) => !t.completed) : dayTasks
 
   useEffect(() => {
-    if (typeof window === 'undefined') return
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(tasksByDay))
+    saveTasksByDay(tasksByDay)
   }, [tasksByDay])
 
   useEffect(() => {
@@ -164,16 +91,11 @@ export default function Todo() {
       const extracted = await extractTodoTask(raw)
       const targetDay = extracted.day || getTodayDayKey()
       setSelectedDay(targetDay)
-      const at = nowIso()
-      const task = {
-        id: crypto.randomUUID(),
+      const task = createTodoTask({
         title: extracted.title || raw,
         note: extracted.time || '',
         day: targetDay,
-        completed: false,
-        createdAt: at,
-        updatedAt: at,
-      }
+      })
       setTasksByDay((prev) => ({
         ...prev,
         [targetDay]: [task, ...(prev[targetDay] || [])],
@@ -197,16 +119,11 @@ export default function Todo() {
     const extracted = await extractTodoTask(raw)
     const targetDay = extracted.day || selectedDay
     if (extracted.day) setSelectedDay(extracted.day)
-    const at = nowIso()
-    const task = {
-      id: crypto.randomUUID(),
+    const task = createTodoTask({
       title: extracted.title || raw,
       note: extracted.time || '',
       day: targetDay,
-      completed: false,
-      createdAt: at,
-      updatedAt: at,
-    }
+    })
     updateDay(targetDay, (prev) => [task, ...prev])
     setInput('')
   }

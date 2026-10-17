@@ -39,9 +39,10 @@ function blobFilename(mimeType) {
 
 /**
  * @param {Blob} blob
+ * @param {{ language?: string }} [options]
  * @returns {Promise<string>}
  */
-export async function transcribeAudioBlob(blob) {
+export async function transcribeAudioBlob(blob, options = {}) {
   if (!blob?.size) {
     throw new Error('Recording failed — no audio captured.')
   }
@@ -49,8 +50,8 @@ export async function transcribeAudioBlob(blob) {
   const form = new FormData()
   const mime = blob.type || 'audio/webm'
   form.append('file', blob, blobFilename(mime))
-  // Let OpenAI auto-detect language for bilingual speech (PL/EN).
-  form.append('language', 'auto')
+  // Let OpenAI auto-detect language for bilingual speech (PL/EN) unless overridden.
+  form.append('language', options.language && options.language !== 'auto' ? options.language : 'auto')
 
   console.log('[voice] audio blob size:', blob.size)
   console.log('[voice] audio sent to /api/transcribe')
